@@ -12,6 +12,7 @@ use crate::{Session, cmd};
 
 mod bidi;
 mod documents;
+mod edms;
 mod find_apostrophes;
 mod font_sizes;
 mod fonts;

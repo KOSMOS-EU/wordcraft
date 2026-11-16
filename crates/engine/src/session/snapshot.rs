@@ -87,6 +87,7 @@ impl Session {
             goal_x: _,
             page_hint: _,
             registry: _,
+            edms: _,
             author: _,
             initials: _,
             painter: _,

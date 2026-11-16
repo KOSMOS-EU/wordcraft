@@ -11,6 +11,7 @@ pub mod controls;
 pub mod design;
 pub mod draw;
 pub mod edit;
+pub mod edms;
 pub mod equation;
 pub mod fields;
 pub mod file;
@@ -84,6 +85,7 @@ pub fn registry() -> Registry {
     v.extend(table_mouse::specs());
     v.extend(review::specs());
     v.extend(file::specs());
+    v.extend(edms::specs());
     v.extend(options::specs());
     v.extend(packs::specs());
     v.extend(design::specs());

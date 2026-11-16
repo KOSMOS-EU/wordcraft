@@ -247,6 +247,7 @@ impl Session {
             clipboard_rtf: _,
             clip_history: _,
             registry: _,
+            edms: _,
             author: _,
             initials: _,
             painter: _,

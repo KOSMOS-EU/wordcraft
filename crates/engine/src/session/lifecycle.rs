@@ -104,6 +104,7 @@ impl Session {
             goal_x,
             page_hint,
             registry,
+            edms: Default::default(),
             author: "WordCraft User".into(),
             initials: String::new(),
             painter: None,

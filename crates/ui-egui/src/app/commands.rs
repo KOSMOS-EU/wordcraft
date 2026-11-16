@@ -138,6 +138,11 @@ impl WordApp {
             }
             return r;
         }
+        // kosmos: a document that lives in the EDMS saves there, through the module, with the
+        // version check the server does (`If-Match`); the host page is told through `edms.saved`.
+        if id == "file.save" && self.session.edms.connected() && self.session.edms.document(self.session.document_id()).is_some() {
+            return self.session.run("edms.save", &json!({})).map_err(|e| e.to_string());
+        }
         // Web: saving and exporting become downloads.
         if self.services.download.is_some() && matches!(id, "file.save" | "file.saveAs" | "file.exportPdf" | "file.exportPng") {
             let name = params.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.web_save_name(id));
@@ -446,6 +451,9 @@ impl WordApp {
         }
         if req.get("toggle").and_then(Value::as_str) == Some("interfaceTheme") {
             self.ui.theme = if self.ui_is_dark() { theme::Appearance::Light } else { theme::Appearance::Dark };
+        }
+        if let Some(edms) = req.get("edms") {
+            self.edms_request(edms);
         }
         if let Some(what) = req.get("open").and_then(Value::as_str) {
             match what {

@@ -497,3 +497,30 @@ pub(crate) fn suggested_stem(text: &str) -> Option<String> {
     let words = words.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
     (!words.is_empty()).then_some(words)
 }
+
+impl WordApp {
+    /// kosmos: what the EDMS module reports (`Session::edms_pump`): a save went through, the
+    /// server has a newer version, the file is gone. Until the conflict dialog exists, the status
+    /// bar says it.
+    pub(crate) fn edms_request(&mut self, edms: &Value) {
+        if let Some(event) = edms.get("event").and_then(Value::as_str) {
+            let text = match event {
+                "saved" => tl!("Saved to the cloud"),
+                "opened" => tl!("Opened from the cloud"),
+                "reloaded" => tl!("Reloaded the cloud version"),
+                "relocated" => tl!("Saved as a new file in the cloud"),
+                _ => return,
+            };
+            self.status(text.to_string());
+        }
+        if let Some(advice) = edms.get("advice").and_then(Value::as_str) {
+            let text = match advice {
+                "reload" => tl!("Someone else saved a new version. File › Reload from the cloud gets it."),
+                "conflict" => tl!("Someone else saved a new version while you have unsaved changes. Save As keeps yours; Reload takes theirs."),
+                "saveAs" => tl!("The file was renamed, moved or deleted in the cloud. Save As puts it somewhere."),
+                _ => return,
+            };
+            self.status(text.to_string());
+        }
+    }
+}
