@@ -848,10 +848,11 @@ mod tests {
         assert_eq!(a.edms_browser.open.as_ref().map(|b| b.name.as_str()), Some("Server only.docx"));
     }
 
-    /// Without local files and without an EDMS connection nothing opens, and files that arrive
-    /// anyway (a drop) are refused.
+    /// Without local files and without an EDMS connection nothing opens; the host page's own
+    /// document, which comes through the inbox like a drop, still opens (the drops themselves
+    /// are stopped at their source).
     #[test]
-    fn server_only_without_a_connection_refuses_local_files() {
+    fn server_only_without_a_connection_refuses_local_files_but_takes_the_hosts_document() {
         let inbox: crate::Inbox = Default::default();
         let services = Services { inbox: Some(inbox.clone()), open_async: Some(Box::new(|_| panic!("no system dialog"))), ..Default::default() };
         let mut a = WordApp::new(Session::new(wordcraft_doc::Document::new()), services);
@@ -859,13 +860,10 @@ mod tests {
         a.open_dialog();
         assert!(a.edms_browser.open.is_none() && !a.file_dialog_open());
         assert!(status_of(&a).contains("no EDMS connection"), "{}", status_of(&a));
-        inbox
-            .lock()
-            .unwrap()
-            .push(("dropped.docx".into(), wordcraft_engine::io::save_bytes("x.docx", &wordcraft_doc::Document::from_text("Dropped")).unwrap()));
+        let hosted = wordcraft_engine::io::save_bytes("x.docx", &wordcraft_doc::Document::from_text("From the host")).unwrap();
+        inbox.lock().unwrap().push(("hosted.docx".into(), hosted));
         a.drain_inbox();
-        assert!(!a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("Dropped"), "the drop is refused");
-        assert!(status_of(&a).contains("EDMS"), "{}", status_of(&a));
+        assert!(a.session.doc.plain_text(wordcraft_doc::StoryRef::Body).contains("From the host"), "the host's document opens");
     }
 
     /// The picker lists the spaces, the personal one first, then its root folder, and a picked

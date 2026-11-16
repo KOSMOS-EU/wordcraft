@@ -338,6 +338,13 @@ impl WordApp {
     /// drop would open or insert it again.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn open_dropped_files(&mut self, files: Vec<egui::DroppedFileHandle>) {
+        // kosmos: a host that allows no local files gets no drops (server-only).
+        if !self.embed.local_files {
+            if !files.is_empty() {
+                self.status(tl!("This page doesn't allow files from this computer; open them from the EDMS."));
+            }
+            return;
+        }
         let before = self.session.document_id();
         let mut placed_picture = false;
         for f in &files {
@@ -433,18 +440,14 @@ impl WordApp {
         }
     }
 
-    /// Files that arrived asynchronously (web picker, drops): documents open, pictures insert,
-    /// recipient lists (CSV/TSV, spreadsheets, or a text file asked for as one) load as recipients.
-    /// kosmos: a host that allows no local files gets none of them (they can only be drops then).
+    /// Files that arrived asynchronously (web picker, drops, the host page's own document):
+    /// documents open, pictures insert, recipient lists (CSV/TSV, spreadsheets, or a text file
+    /// asked for as one) load as recipients. kosmos: without local files the picker and the drops
+    /// are stopped at their source (`local_files_refused`, the web shell), so what arrives here
+    /// is the host's or the EDMS picker's.
     pub(crate) fn drain_inbox(&mut self) {
         let Some(inbox) = self.services.inbox.clone() else { return };
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        if !self.embed.local_files {
-            if !files.is_empty() {
-                self.status(tl!("This page doesn't allow files from this computer; open them from the EDMS."));
-            }
-            return;
-        }
         let mut placed_picture = false;
         for (name, bytes) in files {
             placed_picture = self.file_arrived(&name, bytes, placed_picture);

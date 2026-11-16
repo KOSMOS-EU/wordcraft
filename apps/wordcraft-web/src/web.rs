@@ -209,6 +209,12 @@ impl eframe::App for WebShell {
         if ui.ctx().current_pass_index() == 0 {
             let ctx = ui.ctx().clone();
             let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+            // kosmos: a host that allows no local files gets no drops (server-only); the host's own
+            // document comes through the same inbox and stays welcome.
+            if !dropped.is_empty() && !self.app.embed.local_files {
+                self.app.status(wordcraft_ui_egui::tl!("This page doesn't allow files from this computer; open them from the EDMS."));
+                return self.app.ui(ui);
+            }
             for f in dropped {
                 let inbox = self.inbox.clone();
                 let ctx = ctx.clone();
