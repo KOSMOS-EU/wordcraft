@@ -125,8 +125,9 @@ fn a_collaborator_proposes_and_applies_the_masters_commits() {
         (status["pending"].as_u64(), status["confirmed"].as_u64(), status["applied"].as_u64(), status["seq"].as_u64()),
         (Some(0), Some(1), Some(1), Some(2))
     );
-    // A NAK is reported, not rolled back (first stage).
+    // A NAK takes the own command back: the snapshot from before it comes back.
     s.run("text.insert", &json!({"text": "!"})).unwrap();
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["journal"], json!(1), "the pending proposal is journaled");
     let op2 = transport.take_sent().into_iter().find(|f| f.kind == FrameType::Op).unwrap();
     let mut nak = Frame::new(FrameType::Nak).with_payload(b"stale".to_vec());
     nak.sender = 2;
@@ -134,8 +135,10 @@ fn a_collaborator_proposes_and_applies_the_masters_commits() {
     transport.deliver(nak);
     s.signal_pump();
     let status = s.run("signal.status", &json!({})).unwrap();
-    assert_eq!(status["rejected"], json!(1));
-    assert!(std::mem::take(&mut s.ui_requests).iter().any(|r| r["signal"]["event"] == "rejected"));
+    assert_eq!((status["rejected"].as_u64(), status["rolledBack"].as_u64(), status["journal"].as_u64()), (Some(1), Some(1), Some(0)));
+    assert_eq!(text(&s), "Theirs Mine", "the ! is gone");
+    let requests = std::mem::take(&mut s.ui_requests);
+    assert!(requests.iter().any(|r| r["signal"]["event"] == "rejected" && r["signal"]["undone"] == json!(true)), "{requests:?}");
 }
 
 /// As the master, a proposal of another participant is applied and committed with time and
@@ -189,14 +192,27 @@ fn master_changes_and_closures_reach_the_front_end() {
     master.seq = 7;
     transport.deliver(master);
     s.signal_pump();
+    // The unconfirmed "Pending" was taken back and, as the new master, committed with seq 8.
     let status = s.run("signal.status", &json!({})).unwrap();
-    assert_eq!((status["isMaster"].as_bool(), status["seq"].as_u64(), status["rejected"].as_u64()), (Some(true), Some(7), Some(1)));
+    assert_eq!(
+        (status["isMaster"].as_bool(), status["seq"].as_u64(), status["rejected"].as_u64(), status["resent"].as_u64(), status["pending"].as_u64()),
+        (Some(true), Some(8), Some(0), Some(1), Some(0)),
+        "{status}"
+    );
+    assert_eq!(text(&s), "Pending");
+    let resent = transport.take_sent().into_iter().find(|f| f.kind == FrameType::Commit).expect("the resent command as a COMMIT");
+    assert_eq!(resent.seq, 8);
+    let resent: OpPayload = wire::decode(&resent.payload).unwrap();
+    assert_eq!(resent.params, json!({"text": "Pending"}));
     let requests = std::mem::take(&mut s.ui_requests);
-    assert!(requests.iter().any(|r| r["signal"]["event"] == "master" && r["signal"]["me"] == json!(true)), "{requests:?}");
-    // Now the master: the next edit is a COMMIT with seq 8.
+    assert!(
+        requests.iter().any(|r| r["signal"]["event"] == "master" && r["signal"]["me"] == json!(true) && r["signal"]["resent"] == json!(1)),
+        "{requests:?}"
+    );
+    // Now the master: the next edit is a COMMIT with seq 9.
     s.run("text.insert", &json!({"text": "!"})).unwrap();
     let commit = transport.take_sent().into_iter().find(|f| f.kind == FrameType::Commit).unwrap();
-    assert_eq!(commit.seq, 8);
+    assert_eq!(commit.seq, 9);
     transport.push(Event::Closed("relay gone".into()));
     s.signal_pump();
     assert_eq!(s.run("signal.status", &json!({})).unwrap()["state"], json!("disconnected"));
@@ -204,4 +220,198 @@ fn master_changes_and_closures_reach_the_front_end() {
     s.run("text.insert", &json!({"text": "?"})).unwrap();
     assert!(transport.take_sent().is_empty(), "local again");
     assert_eq!(s.run("signal.disconnect", &json!({})).unwrap()["connected"], json!(false));
+}
+
+/// A proposal from the master's side of the table: `op` by `sender` on `base`, anchored at
+/// paragraph `block` of the body.
+fn proposal(sender: u16, local: u32, base: u32, block: usize, command: &str, params: Value) -> Frame {
+    let op = OpPayload {
+        command: command.into(),
+        params,
+        anchor: serde_json::to_value(crate::Selection::caret(wordcraft_doc::Pos::body(block, 0))).unwrap(),
+        time: 0,
+        author: 0,
+    };
+    let mut frame = Frame::new(FrameType::Op).with_payload(wire::encode(&op).unwrap());
+    frame.sender = sender;
+    frame.local = local;
+    frame.base = base;
+    frame
+}
+
+fn answer(transport: &RecordingTransport, local: u32) -> FrameType {
+    let sent = transport.take_sent();
+    let frame = sent.iter().find(|f| f.kind == FrameType::Commit && f.local == local || f.kind == FrameType::Nak && f.local == local);
+    frame.map(|f| f.kind).unwrap_or_else(|| panic!("no answer to local {local}: {sent:?}"))
+}
+
+/// The master's conflict rule: a stale base is fine unless someone else's commit since then
+/// touched the same paragraph; the sender's own commits never conflict; a commit that changed
+/// the paragraph count moves everything after it.
+#[test]
+fn the_master_rejects_a_stale_proposal_only_on_overlap() {
+    let (mut s, transport) = session();
+    joined(&mut s, &transport, 1, 0, 1, 0);
+    // The master's own edit is seq 1 in paragraph 0.
+    s.run("text.insert", &json!({"text": "Base"})).unwrap();
+    transport.take_sent();
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["traces"], json!(1));
+    // Participant 2 on base 0 at paragraph 0: overlaps seq 1.
+    transport.deliver(proposal(2, 1, 0, 0, "text.insert", json!({"text": "x"})));
+    s.signal_pump();
+    assert_eq!(answer(&transport, 1), FrameType::Nak);
+    assert_eq!(text(&s), "Base");
+    // The same on the current base: committed as seq 2.
+    transport.deliver(proposal(2, 2, 1, 0, "text.insert", json!({"text": "x"})));
+    s.signal_pump();
+    assert_eq!(answer(&transport, 2), FrameType::Commit);
+    assert_eq!(text(&s), "xBase");
+    // Participant 2 again on base 1 (it hasn't seen its own commit yet): its own seq 2 is no conflict.
+    transport.deliver(proposal(2, 3, 1, 0, "text.insert", json!({"text": "y"})));
+    s.signal_pump();
+    assert_eq!(answer(&transport, 3), FrameType::Commit);
+    // Participant 3 on base 1 at paragraph 0: conflicts with participant 2's seq 2.
+    transport.deliver(proposal(3, 1, 1, 0, "text.insert", json!({"text": "z"})));
+    s.signal_pump();
+    assert_eq!(answer(&transport, 1), FrameType::Nak);
+    // A second paragraph (seq 4, structural, at paragraph 0).
+    transport.deliver(proposal(2, 4, 3, 0, "text.newParagraph", json!({})));
+    s.signal_pump();
+    assert_eq!(answer(&transport, 4), FrameType::Commit);
+    assert_eq!(s.doc.paragraph_count(), 2);
+    // Participant 3 on base 3 at paragraph 1: nothing of its own there, but seq 4 moved it.
+    transport.deliver(proposal(3, 2, 3, 1, "text.insert", json!({"text": "z"})));
+    s.signal_pump();
+    assert_eq!(answer(&transport, 2), FrameType::Nak);
+    // Participant 3 on base 4 at paragraph 1, then participant 2 on base 4 at paragraph 0: no
+    // overlap, paragraph 1's edit is after paragraph 0 and not structural.
+    transport.deliver(proposal(3, 3, 4, 1, "text.insert", json!({"text": "second"})));
+    s.signal_pump();
+    assert_eq!(answer(&transport, 3), FrameType::Commit);
+    transport.deliver(proposal(2, 5, 4, 0, "text.insert", json!({"text": "first "})));
+    s.signal_pump();
+    assert_eq!(answer(&transport, 5), FrameType::Commit);
+    assert_eq!(text(&s), "first \nsecondyxBase");
+    // Without an anchor a stale proposal can't be judged: rejected.
+    let bad = OpPayload { command: "text.insert".into(), params: json!({"text": "?"}), anchor: Value::Null, time: 0, author: 0 };
+    let mut frame = Frame::new(FrameType::Op).with_payload(wire::encode(&bad).unwrap());
+    frame.sender = 3;
+    frame.local = 4;
+    frame.base = 5;
+    transport.deliver(frame);
+    s.signal_pump();
+    assert_eq!(answer(&transport, 4), FrameType::Nak);
+    let log = s.run("signal.poll", &json!({})).unwrap();
+    let reasons: Vec<&str> = log["events"].as_array().unwrap().iter().filter_map(|e| e["reason"].as_str()).filter(|r| !r.is_empty()).collect();
+    assert_eq!(reasons.len(), 4, "{reasons:?}");
+    assert!(
+        reasons[0].contains("seq 1") && reasons[1].contains("seq 2") && reasons[2].contains("seq 4") && reasons[3].contains("seq 6"),
+        "{reasons:?}"
+    );
+}
+
+/// A rejected proposal is taken back and what came after it (others' commits, own later
+/// proposals) replayed on the restored state.
+#[test]
+fn a_nak_restores_the_snapshot_and_replays_the_journal() {
+    let (mut s, transport) = session();
+    joined(&mut s, &transport, 2, 1, 1, 0);
+    s.run("text.insert", &json!({"text": "Mine"})).unwrap();
+    let op1 = transport.take_sent().into_iter().find(|f| f.kind == FrameType::Op).unwrap();
+    // The master's commit of participant 1's "Theirs" after it.
+    let theirs = OpPayload {
+        command: "text.insert".into(),
+        params: json!({"text": "Theirs"}),
+        anchor: serde_json::to_value(crate::Selection::caret(wordcraft_doc::Pos::body(0, 4))).unwrap(),
+        time: 1,
+        author: 1,
+    };
+    let mut commit = Frame::new(FrameType::Commit).with_payload(wire::encode(&theirs).unwrap());
+    commit.sender = 1;
+    commit.seq = 1;
+    transport.deliver(commit);
+    s.signal_pump();
+    assert_eq!(text(&s), "MineTheirs");
+    // A second own proposal at the start.
+    s.run("caret.home", &json!({})).unwrap();
+    s.run("text.insert", &json!({"text": "!"})).unwrap();
+    transport.take_sent();
+    assert_eq!(text(&s), "!MineTheirs");
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["journal"], json!(3));
+    // The master rejects the first: back to before "Mine", then "Theirs" (clamped to the start)
+    // and "!" again.
+    let mut nak = Frame::new(FrameType::Nak).with_payload(b"base 0: conflicts with seq 1 of participant 1".to_vec());
+    nak.sender = 2;
+    nak.local = op1.local;
+    transport.deliver(nak);
+    s.signal_pump();
+    assert_eq!(text(&s), "!Theirs");
+    let status = s.run("signal.status", &json!({})).unwrap();
+    assert_eq!(
+        (status["rejected"].as_u64(), status["rolledBack"].as_u64(), status["pending"].as_u64(), status["journal"].as_u64()),
+        (Some(1), Some(1), Some(1), Some(1)),
+        "{status} (the journal starts at the oldest pending proposal)"
+    );
+    let log = s.run("signal.poll", &json!({})).unwrap();
+    let rejected = log["events"].as_array().unwrap().iter().find(|e| e["event"] == "rejected").unwrap();
+    assert_eq!((rejected["undone"].as_bool(), rejected["replayed"].as_u64()), (Some(true), Some(2)), "{rejected}");
+    // Nothing was proposed again by the replay.
+    assert!(transport.take_sent().iter().all(|f| f.kind != FrameType::Op));
+    // The confirmation of "!" empties the journal.
+    let mut mine = Frame::new(FrameType::Commit).with_payload(
+        wire::encode(&OpPayload { command: "text.insert".into(), params: json!({"text": "!"}), anchor: Value::Null, time: 2, author: 2 }).unwrap(),
+    );
+    mine.sender = 2;
+    mine.seq = 2;
+    mine.local = 2;
+    transport.deliver(mine);
+    s.signal_pump();
+    let status = s.run("signal.status", &json!({})).unwrap();
+    assert_eq!((status["pending"].as_u64(), status["journal"].as_u64()), (Some(0), Some(0)), "{status}");
+    assert_eq!(text(&s), "!Theirs");
+}
+
+/// A master change with two pending proposals and a foreign commit in between: both are taken
+/// back and proposed again, in order, on the state with the commit; the old NAKs are expected.
+#[test]
+fn a_master_change_resends_the_pending_proposals_in_order() {
+    let (mut s, transport) = session();
+    joined(&mut s, &transport, 2, 1, 1, 0);
+    s.run("text.insert", &json!({"text": "A"})).unwrap();
+    let theirs = OpPayload {
+        command: "text.insert".into(),
+        params: json!({"text": "X"}),
+        anchor: serde_json::to_value(crate::Selection::caret(wordcraft_doc::Pos::body(0, 0))).unwrap(),
+        time: 1,
+        author: 1,
+    };
+    let mut commit = Frame::new(FrameType::Commit).with_payload(wire::encode(&theirs).unwrap());
+    commit.sender = 1;
+    commit.seq = 1;
+    transport.deliver(commit);
+    s.signal_pump();
+    s.run("text.insert", &json!({"text": "B"})).unwrap();
+    // The own caret stayed at 1 while "X" came in before it (anchors are not transformed yet).
+    assert_eq!(text(&s), "XBA");
+    transport.take_sent();
+    // Participant 3 becomes the master; the session stays a collaborator.
+    let mut master = Frame::new(FrameType::Master).with_payload(wire::encode(&MasterPayload { master: 3, lock: String::new() }).unwrap());
+    master.seq = 1;
+    transport.deliver(master);
+    s.signal_pump();
+    let sent = transport.take_sent();
+    let ops: Vec<OpPayload> = sent.iter().filter(|f| f.kind == FrameType::Op).map(|f| wire::decode(&f.payload).unwrap()).collect();
+    assert_eq!(ops.iter().map(|o| o.params["text"].as_str().unwrap()).collect::<Vec<_>>(), vec!["A", "B"], "{sent:?}");
+    assert!(sent.iter().filter(|f| f.kind == FrameType::Op).all(|f| f.base == 1), "proposed on the agreed state");
+    // Built again on the agreed state: A at its anchor 0 of "X", B at its anchor 1. That is
+    // what the new master computes from the two proposals too.
+    assert_eq!(text(&s), "ABX");
+    let status = s.run("signal.status", &json!({})).unwrap();
+    assert_eq!(
+        (status["isMaster"].as_bool(), status["rejected"].as_u64(), status["resent"].as_u64(), status["pending"].as_u64()),
+        (Some(false), Some(0), Some(2), Some(2)),
+        "{status}"
+    );
+    let log = s.run("signal.poll", &json!({})).unwrap();
+    assert_eq!(log["events"].as_array().unwrap().iter().filter(|e| e["event"] == "resent").count(), 2, "{log}");
 }

@@ -19,6 +19,8 @@ struct SuccessContext<'a> {
     rev_before: u64,
     sel_before: &'a Selection,
     params: &'a Value,
+    /// kosmos: the state before an own edit a collaborator is about to propose (Craft Signal).
+    signal_snapshot: Option<Box<super::EditSnapshot>>,
 }
 
 struct ElsewhereContext {
@@ -179,6 +181,8 @@ impl Session {
             self.pending_move = None;
         }
         let sel_before = self.sel.clone();
+        // kosmos: a collaborator keeps the state before an own proposal, to take it back on a NAK.
+        let signal_snapshot = self.signal_snapshot_before(spec.mutates, id);
         // A rejected command must not persist a new proofing default, including a rejection
         // by the protected-region check after its handler has succeeded. Undo stays document-only.
         let default_language_before = self.prefs.default_language.clone();
@@ -227,6 +231,7 @@ impl Session {
                 rev_before,
                 sel_before: &sel_before,
                 params,
+                signal_snapshot,
             }),
             Err(e) => {
                 self.ime_edit_outcome = ImeEditOutcome::default();
@@ -296,6 +301,7 @@ impl Session {
             rev_before,
             sel_before,
             params,
+            signal_snapshot,
         } = context;
         let mut no_op = false;
         if spec.mutates {
@@ -392,7 +398,7 @@ impl Session {
         }
         // kosmos: an edit of this document goes to the collaboration as a proposal (Craft Signal).
         if spec.mutates && !no_op {
-            self.signal_record(id, params, sel_before);
+            self.signal_record(id, params, sel_before, before_doc.as_ref().map(|b| &b.0), signal_snapshot);
         }
         // Outline view: collapsed headings follow edits; the caret stays where it shows.
         crate::cmd::outline::after_command(self, sel_before, self.rev != rev_before);
