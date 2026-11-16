@@ -730,9 +730,10 @@ pub(crate) fn open_recent(app: &mut WordApp, path: &str) -> Result<(), String> {
 
 fn open_page(app: &mut WordApp, ui: &mut Ui) {
     heading(ui, "Open");
-    if ui.button(egui::RichText::new(tl!("Browse…")).font(medium(14.0))).clicked() {
+    // kosmos: the EDMS beside this computer, or instead of it (server-only).
+    edms_or_local(app, ui, "document", "Open from the EDMS…", |app| {
         let _ = app.run("ui.openFileDialog", json!({}));
-    }
+    });
     // Linux and the BSDs (#576): the system dialog needs a file chooser portal or zenity; when it
     // doesn't show up, WordCraft's own browser is always one click away.
     #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
@@ -756,15 +757,14 @@ fn save_as_page(app: &mut WordApp, ui: &mut Ui) {
         ui.label(egui::RichText::new(&error).color(ui.visuals().error_fg_color));
         ui.add_space(6.0);
     }
-    if ui.button(egui::RichText::new(tl!("Browse…")).font(medium(14.0))).clicked() {
-        app.save_as_dialog();
-    }
+    edms_or_local(app, ui, "save", "Save in the EDMS…", |app| app.save_as_dialog());
     // A Word template in the user templates folder, which File › New lists under Personal (#2852).
     ui.add_space(8.0);
-    if ui
-        .button(egui::RichText::new(tl!("Save as Word Template…")).font(medium(14.0)))
-        .on_hover_text(tl!("Saves a .dotx template in your templates folder. It shows up in File › New under Personal."))
-        .clicked()
+    if app.embed.local_files
+        && ui
+            .button(egui::RichText::new(tl!("Save as Word Template…")).font(medium(14.0)))
+            .on_hover_text(tl!("Saves a .dotx template in your templates folder. It shows up in File › New under Personal."))
+            .clicked()
     {
         let _ = app.run("ui.saveAsTemplate", json!({}));
     }
@@ -898,8 +898,39 @@ fn export_page(app: &mut WordApp, ui: &mut Ui) {
     }
     heading(ui, "Export");
     ui.label(tl!("Save a copy in another format. Printing goes through a PDF you can print from any viewer."));
+    // kosmos: where the copy goes, when both ways are open; without local files it is the EDMS.
+    if app.embed.local_files && app.edms_available() {
+        let mut to_edms = app.export_to_edms();
+        if ui.checkbox(&mut to_edms, tl!("Export into the EDMS")).on_hover_text(tl!("Off, the copy is saved on this computer.")).changed() {
+            app.edms_browser.export_to_edms = Some(to_edms);
+        }
+    } else if !app.embed.local_files {
+        ui.label(egui::RichText::new(tl!("Copies are saved in the EDMS.")).color(ui.visuals().weak_text_color()));
+    }
     ui.add_space(12.0);
     crate::print_page::export_formats(app, ui);
+}
+
+/// kosmos: the EDMS button (when there is a connection) and the local Browse… button (when the
+/// host allows local files), one under the other; a note when neither is there.
+fn edms_or_local(app: &mut WordApp, ui: &mut Ui, purpose: &str, edms_label: &str, local: impl FnOnce(&mut WordApp)) {
+    let edms = app.edms_available();
+    if edms && ui.button(egui::RichText::new(tl!(edms_label)).font(medium(14.0))).clicked() {
+        app.browse_edms(purpose);
+    }
+    if app.embed.local_files {
+        if edms {
+            ui.add_space(6.0);
+        }
+        if ui.button(egui::RichText::new(tl!("Browse…")).font(medium(14.0))).clicked() {
+            local(app);
+        }
+    } else if !edms {
+        ui.label(
+            egui::RichText::new(tl!("There is no EDMS connection, and this page doesn't allow files from this computer."))
+                .color(ui.visuals().error_fg_color),
+        );
+    }
 }
 
 #[cfg(test)]

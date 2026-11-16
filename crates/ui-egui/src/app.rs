@@ -71,6 +71,7 @@ impl WordApp {
             shown_document,
             #[cfg(not(target_arch = "wasm32"))]
             file_browser,
+            edms_browser,
             tab,
             backstage,
             backstage_page,
@@ -187,6 +188,7 @@ impl WordApp {
             shown_document,
             #[cfg(not(target_arch = "wasm32"))]
             file_browser,
+            edms_browser,
         }
     }
 
@@ -259,6 +261,7 @@ impl WordApp {
         self.settle_async_saves();
         // kosmos: answers from the EDMS (opened, saved, a conflict) land as ui requests.
         self.session.edms_pump();
+        crate::edms_browser::poll(self);
         // Chinese text wants the Chinese face before the Japanese one (one glyph style per line).
         // An installed CJK font is read only once CJK text is shown (#241): a CJK interface, the
         // language names in Options, or a file name the caption is drawing. A file opened later

@@ -38,6 +38,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("edms.open", "Open from the EDMS", EDMS, open)
             .params(r#"{"drive", "path": "/Folder/name.docx"} → {"pending": id}; result {"opened": true, "name", "etag", "document"}. Opens beside the current document when that has unsaved changes."#)
             .pure(),
+        CommandSpec::new("edms.fetch", "Fetch a file from the EDMS", EDMS, fetch)
+            .params(r#"{"drive", "path": "/Folder/picture.png"} → {"pending": id}; result {"fetched": true, "name", "size", "data": base64}. The bytes as they are, for the front end (a picture to insert, a recipient list); nothing opens."#)
+            .pure(),
         CommandSpec::new("edms.adopt", "Adopt the open document's EDMS location", EDMS, adopt)
             .params(r#"{"drive", "path": "/Folder/name.docx", "id"?: file id, "etag"?: the version the host loaded, "permissions"?: "RDNVWZP"} → {"adopted": true}. For a document the host page loaded itself: from now on edms.save, edms.saveAs and edms.event work on it."#)
             .pure(),
@@ -153,6 +156,15 @@ fn open(s: &mut Session, v: &Value) -> CmdResult {
         return Err(CmdError::Params("`path` must name a file".into()));
     }
     pending(s, Request::Get { drive_id, path }, Action::Open { name })
+}
+
+fn fetch(s: &mut Session, v: &Value) -> CmdResult {
+    let (drive_id, path) = drive_and_path(v)?;
+    let name = Location::new(&drive_id, &path).name().to_string();
+    if !craft_edms::location::valid_name(&name) {
+        return Err(CmdError::Params("`path` must name a file".into()));
+    }
+    pending(s, Request::Get { drive_id, path }, Action::Fetch { name })
 }
 
 fn adopt(s: &mut Session, v: &Value) -> CmdResult {

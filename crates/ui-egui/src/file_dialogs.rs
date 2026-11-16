@@ -119,19 +119,43 @@ impl WordApp {
         self.file_dialog.is_some() || self.file_browser_open()
     }
 
+    /// Whether a browser of the app's own is open: the built-in file browser (desktop) or the
+    /// EDMS picker (kosmos). It is modal and takes the keys from the dialog under it.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn file_browser_open(&self) -> bool {
-        self.file_browser.open.is_some()
+        self.file_browser.open.is_some() || self.edms_browser.open.is_some()
     }
 
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn file_browser_open(&self) -> bool {
-        false
+        self.edms_browser.open.is_some()
+    }
+
+    /// kosmos: a host that allows no local files (`Embed::local_files`, server-only) sends the
+    /// request to the EDMS picker instead, or refuses it when there is no EDMS to pick from.
+    /// `true` when the request was taken care of this way.
+    pub(crate) fn local_files_refused(&mut self, req: FileDialogRequest, after: AfterPick) -> bool {
+        if self.embed.local_files {
+            return false;
+        }
+        if self.edms_available() && crate::edms_browser::supports(&after) {
+            self.show_edms_browser(req, after);
+        } else {
+            self.status(tl!("This page doesn't allow files from this computer, and there is no EDMS connection."));
+        }
+        true
     }
 
     /// Ask the host for a file and do `after` with the answer: now for a blocking dialog, on a
     /// later frame for an asynchronous one. Ignored while another dialog is open.
     pub(crate) fn ask_file(&mut self, req: FileDialogRequest, after: AfterPick) -> Asked {
+        if !self.embed.local_files {
+            return if self.local_files_refused(req, after) && self.edms_browser.open.is_some() {
+                Asked::Pending
+            } else {
+                Asked::Done(Err(tl!("This page doesn't allow files from this computer, and there is no EDMS connection.").to_string()))
+            };
+        }
         if self.file_dialog_open() {
             log::debug!("file dialog already open; ignoring {req:?}");
             self.status(tl!("A file dialog is already open."));
@@ -431,8 +455,14 @@ impl WordApp {
         dir
     }
 
-    /// File › Export: ask where to save a copy in this format, then write it.
+    /// File › Export: ask where to save a copy in this format, then write it. kosmos: into the
+    /// EDMS when the document lives there (or the host allows no local files), see
+    /// [`WordApp::export_to_edms`].
     pub(crate) fn export_dialog(&mut self, ext: &str) {
+        if self.export_to_edms() {
+            self.browse_edms(ext);
+            return;
+        }
         let file_ext = if ext == crate::print_page::EXPORT_WORD_2003 { "xml" } else { ext };
         let name = format!("{}.{file_ext}", self.title_stem());
         let _ = self.ask_file(FileDialogRequest::Save { name, dir: None }, AfterPick::Export { ext: ext.to_string() });
@@ -447,6 +477,13 @@ impl WordApp {
     }
 
     pub(crate) fn open_dialog(&mut self) {
+        if !self.embed.local_files {
+            self.local_files_refused(
+                FileDialogRequest::Open { purpose: "document".into() },
+                AfterPick::OpenDocument { document: self.session.document_id() },
+            );
+            return;
+        }
         if let Some(f) = &self.services.open_async {
             f("document");
             return;
@@ -456,6 +493,10 @@ impl WordApp {
     }
 
     pub(crate) fn pick_picture(&mut self) {
+        if !self.embed.local_files {
+            self.local_files_refused(FileDialogRequest::Open { purpose: "picture".into() }, AfterPick::Picture);
+            return;
+        }
         if let Some(f) = &self.services.open_async {
             f("picture");
             return;

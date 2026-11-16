@@ -53,6 +53,8 @@ js-sys = "0.3"
 
 [dev-dependencies]
 cfb = { workspace = true }
+# kosmos: the EDMS picker's tests answer its requests through craft-edms's recording transport.
+craft-edms = { workspace = true }
 # Producer tests simulate a globally exhausted IME revision allocator through the engine's
 # explicit test-support feature; production builds of this crate never enable it.
 wordcraft-engine = { workspace = true, features = ["test-support"] }

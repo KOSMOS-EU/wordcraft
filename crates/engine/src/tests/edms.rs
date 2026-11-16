@@ -181,7 +181,7 @@ fn save_as_moves_the_document_and_export_does_not() {
     assert!(s.ui_requests.iter().any(|r| r["edms"]["event"] == "relocated"));
 
     // An export is a copy in another format: nothing moves, the document stays clean.
-    let id = pending_id(&s.run("edms.export", &json!({"drive": DRIVE, "path": "/", "name": "Neu.pdf", "overwrite": true}).into()).unwrap());
+    let id = pending_id(&s.run("edms.export", &json!({"drive": DRIVE, "path": "/", "name": "Neu.pdf", "overwrite": true})).unwrap());
     let (_, request) = transport.last_started().unwrap();
     assert!(request.url.ends_with("/Neu.pdf"));
     assert_eq!(request.header_value("if-none-match"), None);
@@ -244,4 +244,37 @@ fn a_host_loaded_document_is_adopted_and_saved_through_the_module() {
     poll_one(&mut s);
     assert!(!s.dirty);
     assert!(s.run("edms.adopt", &json!({"drive": DRIVE, "path": "/"})).is_err(), "a folder is no file");
+}
+
+/// `edms.fetch` hands the bytes over as they are, base64 in the result, and leaves the document
+/// alone: a picture or a recipient list for the front end to place.
+#[test]
+fn fetch_hands_the_bytes_to_the_front_end_without_opening_them() {
+    let (mut s, transport) = connected();
+    s.run("text.insert", &json!({"text": "Stays"})).unwrap();
+    let rev = s.rev();
+    assert!(s.run("edms.fetch", &json!({"drive": DRIVE, "path": "/"})).is_err(), "a folder isn't a file");
+    let id = pending_id(&s.run("edms.fetch", &json!({"drive": DRIVE, "path": "/Bilder/logo.png"})).unwrap());
+    let (_, request) = transport.last_started().unwrap();
+    assert_eq!(request.method, Method::Get);
+    assert!(request.url.ends_with("/Bilder/logo.png"), "{}", request.url);
+    let png = [0x89u8, b'P', b'N', b'G', 0, 1, 2, 3];
+    transport.answer(id, HttpResponse::new(200).with_header("Content-Type", "image/png").with_body(png));
+    let fetched = poll_one(&mut s);
+    assert_eq!((fetched["kind"].as_str(), fetched["fetched"].as_bool(), fetched["name"].as_str()), (Some("fetch"), Some(true), Some("logo.png")));
+    assert_eq!(fetched["size"].as_u64(), Some(png.len() as u64));
+    assert_eq!(crate::cmd::insert::base64_decode(fetched["data"].as_str().unwrap()).unwrap(), png);
+    assert_eq!(s.rev(), rev, "the document is untouched");
+    assert_eq!(s.doc.plain_text(wordcraft_doc::StoryRef::Body), "Stays");
+    // The front end's own request is taken by id; the rest stays for edms.poll.
+    let a = pending_id(&s.run("edms.drives", &json!({})).unwrap());
+    let b = pending_id(&s.run("edms.drives", &json!({})).unwrap());
+    transport.answer(a, HttpResponse::new(200).with_body(DRIVES));
+    transport.answer(b, HttpResponse::new(200).with_body(DRIVES));
+    s.edms_pump();
+    assert_eq!(s.edms.take_result(b).and_then(|r| r["id"].as_u64()), Some(b));
+    assert!(s.edms.take_result(b).is_none(), "taken once");
+    let rest = s.run("edms.poll", &json!({})).unwrap();
+    assert_eq!(rest["results"].as_array().map(Vec::len), Some(1));
+    assert_eq!(rest["results"][0]["id"].as_u64(), Some(a));
 }

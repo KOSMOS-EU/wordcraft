@@ -19,6 +19,8 @@ use crate::{CmdError, Session};
 
 /// Most outcomes kept for `edms.poll` when nobody drains them (a headless session).
 pub const MAX_RESULTS: usize = 64;
+/// Most bytes a fetched file (`edms.fetch`) carries into a result, base64 and all.
+pub const MAX_FETCH_BYTES: usize = 64 * 1024 * 1024;
 
 /// What to do with an outcome beyond reporting it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +42,11 @@ pub enum Action {
     Export,
     /// The server's version replaces the active document.
     Reload,
+    /// The bytes are handed to the front end as they are (a picture to insert, a recipient
+    /// list): nothing opens, the document doesn't change.
+    Fetch {
+        name: String,
+    },
     Lock,
     Unlock,
 }
@@ -148,6 +155,13 @@ impl EdmsState {
     /// The outcomes since the last call, oldest first.
     pub fn take_results(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.results)
+    }
+
+    /// The outcome of one request, if it has arrived: the front end's own requests (the location
+    /// picker) take theirs here and leave the rest for `edms.poll`.
+    pub fn take_result(&mut self, id: RequestId) -> Option<Value> {
+        let at = self.results.iter().position(|r| r.get("id").and_then(Value::as_u64) == Some(id))?;
+        Some(self.results.remove(at))
     }
 
     fn push_result(&mut self, result: Value) {
@@ -292,6 +306,14 @@ impl Session {
                 let name = self.edms.document(self.document_id()).map(|d| d.name.clone()).unwrap_or_else(|| "document".into());
                 self.edms_open_bytes(request, &name, &bytes, etag, file_id, true)
             }
+            (Action::Fetch { name }, Reply::Bytes { bytes, etag, content_type, .. }) => {
+                if bytes.len() > MAX_FETCH_BYTES {
+                    return Err(CmdError::Failed(format!("{name} is too big to fetch ({} bytes)", bytes.len())));
+                }
+                Ok(
+                    json!({"fetched": true, "name": name, "size": bytes.len(), "etag": etag, "contentType": content_type, "data": crate::cmd::insert::base64_encode(&bytes)}),
+                )
+            }
             (Action::Save, Reply::Saved { etag, file_id }) => self.edms_saved(etag, file_id),
             (Action::SaveAs { name, switch }, Reply::Saved { etag, file_id }) => self.edms_saved_as(request, name, *switch, etag, file_id),
             (Action::Export, Reply::Saved { etag, file_id }) => Ok(json!({"etag": etag, "fileId": file_id})),
@@ -414,6 +436,7 @@ fn action_name(action: &Action, kind: &str) -> String {
         Action::SaveAs { .. } => "saveAs".into(),
         Action::Export => "export".into(),
         Action::Reload => "reload".into(),
+        Action::Fetch { .. } => "fetch".into(),
         Action::Lock => "lock".into(),
         Action::Unlock => "unlock".into(),
     }

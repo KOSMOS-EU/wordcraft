@@ -114,6 +114,8 @@ pub fn start() {
                     if app_bridge.is_some() {
                         app.embed.community = query_flag("community").unwrap_or(true);
                         app.embed.sharing = query_flag("sharing").unwrap_or(true);
+                        // `?localFiles=0`: server-only, every file goes through the EDMS.
+                        app.embed.local_files = query_flag("localFiles").unwrap_or(true);
                     }
                     Ok(Box::new(WebShell { app, inbox, messages, prefs }))
                 }),

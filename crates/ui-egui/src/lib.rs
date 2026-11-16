@@ -38,6 +38,7 @@ pub mod crop;
 pub mod desktop_theme;
 pub mod dialogs;
 pub mod documents;
+pub mod edms_browser;
 pub mod equation_tab;
 /// The built-in file browser, for desktops without a system file dialog (#576).
 #[cfg(not(target_arch = "wasm32"))]
@@ -619,7 +620,6 @@ fn migrate_units(v: &mut Value) {
     }
 }
 
-/// The application.
 /// What a host page that embeds the app lets it show (kosmos). The app runs inside another
 /// product's window: that product owns sharing, help and community channels, so the app's own
 /// links out and its Share entry step back. Set once at start from the host (`?community=0`,
@@ -632,11 +632,15 @@ pub struct Embed {
     /// The ribbon's Share button. Off, it reads Export and opens the same Export page: sharing
     /// is the host's, exporting a copy still the app's.
     pub sharing: bool,
+    /// Files on this machine: Open, Save As, Export and the pictures and recipient lists from
+    /// the system's file dialog, drag-and-drop, and the browser's downloads. Off (`?localFiles=0`,
+    /// server-only), every one of them goes through the EDMS instead, and the local ways refuse.
+    pub local_files: bool,
 }
 
 impl Default for Embed {
     fn default() -> Self {
-        Self { community: true, sharing: true }
+        Self { community: true, sharing: true, local_files: true }
     }
 }
 
@@ -648,6 +652,7 @@ impl WordApp {
     }
 }
 
+/// The application.
 pub struct WordApp {
     pub session: Session,
     pub ui: UiState,
@@ -809,6 +814,9 @@ pub struct WordApp {
     /// The built-in file browser, when it is open, and the folder it showed last (#576).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_browser: file_browser::State,
+    /// kosmos: the EDMS location picker (Open, Save As, Export, pictures and recipient lists
+    /// from the EDMS), when it is open, and the place it showed last.
+    pub(crate) edms_browser: edms_browser::State,
     /// File › Info: the property field being typed in and the document revision after its last
     /// keystroke, so one visit's keystrokes make a single undo step (and anything else in
     /// between, such as an Undo, starts a new one).

@@ -120,6 +120,7 @@ impl WordApp {
         updates_ui::show(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         file_browser::show(self, ctx);
+        crate::edms_browser::show(self, ctx);
         colors::show(self, ctx);
         zotero::show_alert(self, ctx);
         read_aloud::show(self, ctx);

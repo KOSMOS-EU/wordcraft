@@ -53,6 +53,8 @@ pub(crate) struct WindowUi {
     pub(crate) file_dialog: Option<file_dialogs::PendingDialog>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_browser: crate::file_browser::State,
+    /// kosmos: the EDMS location picker, when it is open, and the place it showed last.
+    pub(crate) edms_browser: crate::edms_browser::State,
     pub(crate) info_editing: Option<(&'static str, u64)>,
     pub(crate) shown_document: u64,
     // From UiState.
@@ -124,6 +126,7 @@ impl WindowUi {
             file_dialog: None,
             #[cfg(not(target_arch = "wasm32"))]
             file_browser: Default::default(),
+            edms_browser: Default::default(),
             info_editing: None,
             shown_document: document,
             tab,
@@ -252,6 +255,7 @@ impl WordApp {
             file_dialog,
             #[cfg(not(target_arch = "wasm32"))]
             file_browser,
+            edms_browser,
             info_editing,
             shown_document,
         } = self;
@@ -355,6 +359,7 @@ impl WordApp {
             file_dialog,
             #[cfg(not(target_arch = "wasm32"))]
             file_browser,
+            edms_browser,
             info_editing,
             shown_document,
             tab,

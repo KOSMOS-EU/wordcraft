@@ -435,36 +435,53 @@ impl WordApp {
 
     /// Files that arrived asynchronously (web picker, drops): documents open, pictures insert,
     /// recipient lists (CSV/TSV, spreadsheets, or a text file asked for as one) load as recipients.
+    /// kosmos: a host that allows no local files gets none of them (they can only be drops then).
     pub(crate) fn drain_inbox(&mut self) {
         let Some(inbox) = self.services.inbox.clone() else { return };
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        if !self.embed.local_files {
+            if !files.is_empty() {
+                self.status(tl!("This page doesn't allow files from this computer; open them from the EDMS."));
+            }
+            return;
+        }
         let mut placed_picture = false;
         for (name, bytes) in files {
-            let lower = name.to_ascii_lowercase();
-            let img = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".wmf", ".emf"].iter().any(|e| lower.ends_with(e));
-            // Any recipient file ends the pending picker request, so a later .txt drop opens normally.
-            let asked = std::mem::take(&mut self.recipient_list_pending);
-            let list = lower.ends_with(".csv") || lower.ends_with(".tsv") || (lower.ends_with(".txt") && asked);
-            let sheet = wordcraft_engine::cmd::mailings::is_spreadsheet_name(&lower);
-            self.recipient_list_pending = asked && !list && !sheet;
-            let r = if sheet {
-                self.load_recipients(json!({"path": name, "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}))
-            } else if wordcraft_fonts::is_font_file_name(&lower) {
-                self.run("font.add", json!({"name": name, "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}))
-            } else if list {
-                self.load_recipients(json!({"csv": wordcraft_engine::io::decode_text(&bytes)}))
-            } else if img {
-                self.caret_after_placed_picture(placed_picture);
-                let r = self.insert_or_change_picture(json!({"data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}));
-                placed_picture = Self::placed_in_text(&r);
-                r
-            } else {
-                self.run("file.open", json!({"path": name, "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}))
-            };
-            if r.is_ok() {
-                self.ui.backstage = false;
-            }
+            placed_picture = self.file_arrived(&name, bytes, placed_picture);
         }
+    }
+
+    /// One file that arrived with its name and bytes (a pick, a drop, a fetch from the EDMS):
+    /// a document opens, a picture inserts, a recipient list loads. `placed_picture` says whether
+    /// an earlier picture of the same batch was placed in the text; the answer is that for the
+    /// next one.
+    pub(crate) fn file_arrived(&mut self, name: &str, bytes: Vec<u8>, placed_picture: bool) -> bool {
+        let lower = name.to_ascii_lowercase();
+        let img = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".wmf", ".emf"].iter().any(|e| lower.ends_with(e));
+        // Any recipient file ends the pending picker request, so a later .txt drop opens normally.
+        let asked = std::mem::take(&mut self.recipient_list_pending);
+        let list = lower.ends_with(".csv") || lower.ends_with(".tsv") || (lower.ends_with(".txt") && asked);
+        let sheet = wordcraft_engine::cmd::mailings::is_spreadsheet_name(&lower);
+        self.recipient_list_pending = asked && !list && !sheet;
+        let mut placed = placed_picture;
+        let r = if sheet {
+            self.load_recipients(json!({"path": name, "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}))
+        } else if wordcraft_fonts::is_font_file_name(&lower) {
+            self.run("font.add", json!({"name": name, "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}))
+        } else if list {
+            self.load_recipients(json!({"csv": wordcraft_engine::io::decode_text(&bytes)}))
+        } else if img {
+            self.caret_after_placed_picture(placed_picture);
+            let r = self.insert_or_change_picture(json!({"data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}));
+            placed = Self::placed_in_text(&r);
+            r
+        } else {
+            self.run("file.open", json!({"path": name, "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)}))
+        };
+        if r.is_ok() {
+            self.ui.backstage = false;
+        }
+        placed
     }
 }
 

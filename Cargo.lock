@@ -7113,6 +7113,7 @@ dependencies = [
  "accesskit_consumer",
  "cfb",
  "chrono",
+ "craft-edms",
  "craft-i18n",
  "craft-ui",
  "craft-update",

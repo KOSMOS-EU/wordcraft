@@ -143,6 +143,16 @@ impl WordApp {
         if id == "file.save" && self.session.edms.connected() && self.session.edms.document(self.session.document_id()).is_some() {
             return self.session.run("edms.save", &json!({})).map_err(|e| e.to_string());
         }
+        // kosmos: a host that allows no local files gets no downloads either; the EDMS is the
+        // only place to save (Save As and Export go through the picker, `ui.edmsBrowser`).
+        if self.services.download.is_some()
+            && !self.embed.local_files
+            && matches!(id, "file.save" | "file.saveAs" | "file.exportPdf" | "file.exportPng")
+        {
+            let msg = tl!("This page doesn't allow saving to this computer; save in the EDMS.").to_string();
+            self.status(msg.clone());
+            return Err(msg);
+        }
         // Web: saving and exporting become downloads.
         if self.services.download.is_some() && matches!(id, "file.save" | "file.saveAs" | "file.exportPdf" | "file.exportPng") {
             let name = params.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.web_save_name(id));
@@ -757,6 +767,13 @@ impl WordApp {
                 self.browse_builtin(s("purpose").unwrap_or("document"));
                 json!({"open": self.file_browser.open.is_some()})
             }
+            // kosmos: the EDMS picker for `purpose` (document, picture, recipients, save, or an
+            // export format such as pdf): Open, Save As, Export and the pictures and recipient
+            // lists from the document's home in OpenCore. Opens UI, like `ui.fileBrowser`.
+            "ui.edmsBrowser" => {
+                let opened = self.browse_edms(s("purpose").unwrap_or("document"));
+                json!({"open": opened})
+            }
             // Mailings › Select Recipients › Use an Existing List…: pick a CSV/TSV/text file and
             // load it as the mail-merge recipients. Opens system UI, like `ui.openFileDialog`.
             "ui.openRecipientList" => {
@@ -912,6 +929,10 @@ impl WordApp {
     /// Pick a recipient list (desktop: through the file dialog hook; web: it arrives through the
     /// inbox).
     fn pick_recipient_list(&mut self) {
+        if !self.embed.local_files {
+            self.local_files_refused(file_dialogs::FileDialogRequest::Open { purpose: "recipients".into() }, file_dialogs::AfterPick::Recipients);
+            return;
+        }
         if let Some(f) = &self.services.open_async {
             f("recipients");
             self.recipient_list_pending = true;
@@ -1110,7 +1131,9 @@ pub(crate) fn works_without_document(id: &str) -> bool {
             | "edms.stat"
             | "edms.search"
             | "edms.open"
+            | "edms.fetch"
             | "edms.event"
+            | "ui.edmsBrowser"
             | "font.add"
             | "font.list"
             | "font.remove"
