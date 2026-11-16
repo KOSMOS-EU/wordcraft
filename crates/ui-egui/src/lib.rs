@@ -620,9 +620,39 @@ fn migrate_units(v: &mut Value) {
 }
 
 /// The application.
+/// What a host page that embeds the app lets it show (kosmos). The app runs inside another
+/// product's window: that product owns sharing, help and community channels, so the app's own
+/// links out and its Share entry step back. Set once at start from the host (`?community=0`,
+/// `?sharing=0`), never stored as a preference: a visit outside the host shows everything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Embed {
+    /// Links to the community and the project (Discord, Help group, About): the title-bar pill,
+    /// the Backstage link, the Review › Help button, the About hyperlink and `ui.discord`.
+    pub community: bool,
+    /// The ribbon's Share button. Off, it reads Export and opens the same Export page: sharing
+    /// is the host's, exporting a copy still the app's.
+    pub sharing: bool,
+}
+
+impl Default for Embed {
+    fn default() -> Self {
+        Self { community: true, sharing: true }
+    }
+}
+
+impl WordApp {
+    /// Community links show when the user keeps the community button on (File › Options) and
+    /// the host allows them.
+    pub fn community_links(&self) -> bool {
+        self.ui.show_discord && self.embed.community
+    }
+}
+
 pub struct WordApp {
     pub session: Session,
     pub ui: UiState,
+    /// What the embedding host lets the app show; everything, outside a host.
+    pub embed: Embed,
     pub services: Services,
     pub printing: printing::State,
     print_feedback_seen: Option<printing::Feedback>,

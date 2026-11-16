@@ -104,6 +104,13 @@ pub fn start() {
                         crate::host::Bridge::set_author(&mut app, &author);
                         prefs.keep_own_author(&app.session.author, &own);
                     }
+                    // What the host lets the app show (kosmos): `?community=0` keeps the Discord
+                    // and project links out, `?sharing=0` turns Share into Export. Like the
+                    // author, read only from a host and never stored as a preference.
+                    if app_bridge.is_some() {
+                        app.embed.community = query_flag("community").unwrap_or(true);
+                        app.embed.sharing = query_flag("sharing").unwrap_or(true);
+                    }
                     Ok(Box::new(WebShell { app, inbox, messages, prefs }))
                 }),
             )
@@ -130,6 +137,16 @@ fn query() -> String {
 
 fn query_param(key: &str) -> Option<String> {
     web_sys::UrlSearchParams::new_with_str(&query()).ok()?.get(key)
+}
+
+/// A yes/no query parameter: `0`, `false`, `no` and `off` are `false`, `1`, `true`, `yes` and
+/// `on` are `true`; anything else, or no parameter, is `None` (the caller's default).
+fn query_flag(key: &str) -> Option<bool> {
+    match query_param(key)?.trim().to_ascii_lowercase().as_str() {
+        "0" | "false" | "no" | "off" => Some(false),
+        "1" | "true" | "yes" | "on" => Some(true),
+        _ => None,
+    }
 }
 
 /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously)

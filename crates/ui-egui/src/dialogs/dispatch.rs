@@ -39,7 +39,7 @@ pub(super) fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         Dialog::Macros { name } => macros(app, ui, name),
         Dialog::Icons { query, category, selected } => icons_body(app, ui, query, category, selected),
         Dialog::PasteSpecial { .. } => paste_special_dialog(app, ui, d),
-        Dialog::About { .. } => about_dialog(ui, d),
+        Dialog::About { .. } => about_dialog(ui, d, app.embed.community),
         Dialog::DiscardRecovery { .. } => discard_recovery_dialog(app, ui, d),
         Dialog::SaveChanges { .. } => save_changes_dialog(app, ui, d),
         Dialog::RecipientList { fields, rows, message, filter } => recipient_list(app, ui, fields, rows, message, filter),
@@ -1156,7 +1156,9 @@ fn paste_special_dialog(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool 
     ok || cancel
 }
 
-fn about_dialog(ui: &mut Ui, d: &mut Dialog) -> bool {
+/// `community`: the host lets the app link to its community (`WordApp::embed`); without it the
+/// Discord line stays out.
+fn about_dialog(ui: &mut Ui, d: &mut Dialog, community: bool) -> bool {
     let Dialog::About { tab } = d else {
         return false;
     };
@@ -1177,7 +1179,9 @@ fn about_dialog(ui: &mut Ui, d: &mut Dialog) -> bool {
             ui.label(tl!("A free, open-source word processor written from scratch in Rust.\nPart of the Crafting Apps from the ArtCraft team."));
             ui.add_space(6.0);
             ui.hyperlink_to(tl!("getartcraft.com/apps/wordcraft"), "https://getartcraft.com/apps/wordcraft");
-            ui.hyperlink_to(tl!("Join us on Discord: discord.gg/artcraft"), "https://discord.gg/artcraft");
+            if community {
+                ui.hyperlink_to(tl!("Join us on Discord: discord.gg/artcraft"), "https://discord.gg/artcraft");
+            }
             ui.hyperlink_to(tl!("Source code: github.com/storytold/wordcraft"), "https://github.com/storytold/wordcraft");
             ui.add_space(6.0);
             ui.label(egui::RichText::new(tl!("MIT OR Apache-2.0. Copyright (c) 2026 ArtCraft Team and the WordCraft contributors.")).small().weak());

@@ -770,6 +770,10 @@ impl WordApp {
                 ));
             }
             "ui.discord" => {
+                // An embedding host may keep the community channel to itself (kosmos).
+                if !self.embed.community {
+                    return Some(Err("the host of this page does not allow community links".into()));
+                }
                 self.canvas.open_url = Some("https://discord.gg/artcraft".into());
                 json!({})
             }

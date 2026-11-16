@@ -162,7 +162,10 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
                     // Share, Editing mode and Comments keep their room; the tabs get what is left of it
                     // (#897, #2026), and the buttons give up their labels before a tab is drawn over them.
-                    let share = tl!("Share");
+                    // In a host that owns sharing (kosmos) the button is the Export entry it always
+                    // was underneath, and says so.
+                    let sharing = app.embed.sharing;
+                    let share = if sharing { tl!("Share") } else { tl!("Export") };
                     let editing_label = if app.session.doc.settings.track_changes { tl!("Reviewing") } else { tl!("Editing") };
                     let comments = tl!("Comments");
                     let share_w = ui.ctx().fonts_mut(|f| f.layout_no_wrap(share.to_string(), medium(12.0), t.text).size().x);
@@ -204,7 +207,7 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                             icons::paint(
                                 ui.painter(),
                                 Rect::from_center_size(pos2(icon_x, r.center().y), vec2(14.0, 14.0)),
-                                "share",
+                                if sharing { "share" } else { "export" },
                                 t.on_accent,
                                 t.on_accent,
                             );
@@ -218,7 +221,9 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                                 );
                             }
                             resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, share));
-                            if resp.on_hover_text(tl!("Export a copy to share (PDF, Word document)")).clicked() {
+                            let hint =
+                                if sharing { tl!("Export a copy to share (PDF, Word document)") } else { tl!("Export a copy (PDF, Word document)") };
+                            if resp.on_hover_text(hint).clicked() {
                                 let _ = app.run("ui.backstage", json!({"value": true, "page": "export"}));
                             }
                             ui.add_space(6.0);

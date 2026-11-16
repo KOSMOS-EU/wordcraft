@@ -4,7 +4,7 @@ use super::file_browser;
 use super::services::Services;
 use super::state::{AutoSaveBlock, DefaultApp, PromptSave, SaveChoice, keeps_everything};
 use super::{
-    AwaitingSave, ControlRequest, DEFAULT_TAB, MAX_DICTIONARY, MAX_RECENT, QUIT, SaveInFlight, Session, UiState, Value, WordApp, applied_font,
+    AwaitingSave, ControlRequest, DEFAULT_TAB, Embed, MAX_DICTIONARY, MAX_RECENT, QUIT, SaveInFlight, Session, UiState, Value, WordApp, applied_font,
     async_saves, backstage, canvas, chrome, colors, content_controls, crop, desktop_theme, dialogs, dialogs_table_style, documents, file_dialogs,
     i18n, json, keys, keytips, options, panes, paste_picture, printing, push_recent_font, read_aloud, recent_fonts_from, ribbon, scroll,
     system_clipboard, table_pen, theme, updates_ui, widgets, window_ui, windows, zotero,
@@ -103,6 +103,7 @@ impl WordApp {
             printing: Default::default(),
             print_feedback_seen: None,
             integrated_titlebar: false,
+            embed: Embed::default(),
             mac_titlebar: chrome::MacTitleBar::default(),
             updates_rt: updates_ui::Runtime::default(),
             packs_rt: Default::default(),

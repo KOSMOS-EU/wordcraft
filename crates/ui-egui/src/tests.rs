@@ -609,6 +609,50 @@ fn the_community_button_off_hides_the_backstage_discord_link_too() {
     assert!(h.query_by_label("Discord community").is_none(), "the backstage link honors the same setting");
 }
 
+/// A host that embeds the app (kosmos) may keep community links to itself: the Backstage link,
+/// the Review › Help button and the About hyperlink stay out, `ui.discord` refuses, and the
+/// Options toggle for the pill has nothing to switch.
+#[test]
+fn a_host_without_community_links_hides_every_one_of_them() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app();
+    a.embed.community = false;
+    assert!(a.run("ui.discord", json!({})).is_err(), "the command refuses instead of opening the link");
+    a.run("ui.backstage", json!({"value": true})).unwrap();
+    let mut h = harness(a);
+    h.run_steps(2);
+    assert!(h.query_by_label("Discord community").is_none(), "no Backstage link");
+
+    let mut a = app();
+    a.embed.community = false;
+    a.run("ui.tab", json!({"tab": "Review"})).unwrap();
+    let mut h = harness(a);
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Community\nDiscord").next().is_none(), "no Help › Community Discord button");
+    assert!(h.query_all_by_label("Help").next().is_some(), "the Help button itself stays");
+}
+
+/// A host that owns sharing (kosmos): the ribbon's Share button reads Export and still opens
+/// the Export page; outside a host it stays Share.
+#[test]
+fn a_host_that_owns_sharing_relabels_share_as_export() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app();
+    a.embed.sharing = false;
+    let mut h = harness(a);
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Share").next().is_none(), "no Share button");
+    h.get_by_label("Export").click();
+    h.run_steps(2);
+    assert!(h.state().ui.backstage, "the button opens the Backstage");
+    assert_eq!(h.state().ui.backstage_page, "export", "on the Export page");
+
+    let a = app();
+    let mut h = harness(a);
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Share").next().is_some(), "Share, outside a host");
+}
+
 /// File › Options › Advanced › Editing: alignment guides are a UI command, on by default and
 /// kept between runs.
 #[test]
