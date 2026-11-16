@@ -24,6 +24,7 @@ pub mod recovery;
 pub mod ribbon;
 pub mod sample;
 mod session;
+pub mod signal;
 pub(crate) mod snapshot;
 pub mod speech;
 pub mod strict;

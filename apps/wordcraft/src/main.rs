@@ -23,6 +23,7 @@ mod graphics;
 mod logging;
 mod print;
 mod region;
+mod signal_transport;
 #[cfg(target_os = "macos")]
 mod traffic_lights;
 
@@ -613,6 +614,8 @@ fn main() -> eframe::Result {
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(doc);
             session.system_region = region;
+            // kosmos: Craft Signal over the native transport (ticket by HTTP, WebSocket to the relay).
+            session.signal.install(Box::new(craft_signal::Client::new(signal_transport::NativeTransport::new(cc.egui_ctx.clone()))));
             let mut app = WordApp::new(session, services(file_dialog, &cc.egui_ctx));
             app.set_startup_update_check(true);
             load_prefs(&mut app);

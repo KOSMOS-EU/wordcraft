@@ -262,6 +262,8 @@ impl WordApp {
         // kosmos: answers from the EDMS (opened, saved, a conflict) land as ui requests.
         self.session.edms_pump();
         crate::edms_browser::poll(self);
+        // kosmos: the collaboration's commits land as edits, its events as ui requests.
+        self.session.signal_pump();
         // Chinese text wants the Chinese face before the Japanese one (one glyph style per line).
         // An installed CJK font is read only once CJK text is shown (#241): a CJK interface, the
         // language names in Options, or a file name the caption is drawing. A file opened later

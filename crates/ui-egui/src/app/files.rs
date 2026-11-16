@@ -522,6 +522,46 @@ impl WordApp {
     /// kosmos: what the EDMS module reports (`Session::edms_pump`): a save went through, the
     /// server has a newer version, the file is gone. Until the conflict dialog exists, the status
     /// bar says it.
+    /// kosmos: what the collaboration (Craft Signal) reports, as a status line.
+    pub(crate) fn signal_request(&mut self, signal: &Value) {
+        let event = signal.get("event").and_then(Value::as_str).unwrap_or("");
+        let text = match event {
+            "joined" => {
+                let who = if signal.get("master") == signal.get("id") {
+                    tl!("Collaboration: you are the master").to_string()
+                } else {
+                    tl!("Collaboration: joined").to_string()
+                };
+                let reason = signal.get("reason").and_then(Value::as_str).unwrap_or("");
+                if reason.is_empty() { who } else { format!("{who} ({reason})") }
+            }
+            "master" => {
+                if signal.get("me").and_then(Value::as_bool) == Some(true) {
+                    tl!("Collaboration: you are now the master").to_string()
+                } else {
+                    tl!("Collaboration: the master changed").to_string()
+                }
+            }
+            "mode" => crate::i18n::fmt(tl!("Collaboration mode: {mode}"), &[("mode", signal.get("mode").and_then(Value::as_str).unwrap_or(""))]),
+            "rejected" => crate::i18n::fmt(
+                tl!("Collaboration rejected {command}: {reason}"),
+                &[
+                    ("command", signal.get("command").and_then(Value::as_str).unwrap_or("")),
+                    ("reason", signal.get("reason").and_then(Value::as_str).unwrap_or("")),
+                ],
+            ),
+            "closed" => {
+                crate::i18n::fmt(tl!("Collaboration ended: {reason}"), &[("reason", signal.get("reason").and_then(Value::as_str).unwrap_or(""))])
+            }
+            "error" | "applyFailed" => crate::i18n::fmt(
+                tl!("Collaboration error: {message}"),
+                &[("message", signal.get("message").or_else(|| signal.get("error")).and_then(Value::as_str).unwrap_or(""))],
+            ),
+            _ => return,
+        };
+        self.status(text);
+    }
+
     pub(crate) fn edms_request(&mut self, edms: &Value) {
         if let Some(event) = edms.get("event").and_then(Value::as_str) {
             let text = match event {

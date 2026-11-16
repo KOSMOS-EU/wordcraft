@@ -465,6 +465,10 @@ impl WordApp {
         if let Some(edms) = req.get("edms") {
             self.edms_request(edms);
         }
+        // kosmos: Craft Signal events (joined, master, rejected, closed) on the status bar.
+        if let Some(signal) = req.get("signal") {
+            self.signal_request(signal);
+        }
         if let Some(what) = req.get("open").and_then(Value::as_str) {
             match what {
                 "openFile" => self.open_dialog(),
@@ -1134,6 +1138,11 @@ pub(crate) fn works_without_document(id: &str) -> bool {
             | "edms.fetch"
             | "edms.event"
             | "ui.edmsBrowser"
+            | "signal.connect"
+            | "signal.disconnect"
+            | "signal.status"
+            | "signal.mode"
+            | "signal.poll"
             | "font.add"
             | "font.list"
             | "font.remove"

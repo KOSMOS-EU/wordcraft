@@ -84,6 +84,8 @@ pub struct Session {
     pub registry: Arc<Registry>,
     /// Where the open documents live in the EDMS (kosmos), and the requests in flight.
     pub edms: crate::edms::EdmsState,
+    /// kosmos: Craft Signal, the session's seat in a collaboration (`signal.*`).
+    pub signal: crate::signal::SignalState,
     /// Author name for comments and tracked changes.
     pub author: String,
     /// Initials for comments (File › Options › General); empty = the name's initials.

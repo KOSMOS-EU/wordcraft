@@ -18,6 +18,7 @@ struct SuccessContext<'a> {
     ime_caret_before: ImeCaretState,
     rev_before: u64,
     sel_before: &'a Selection,
+    params: &'a Value,
 }
 
 struct ElsewhereContext {
@@ -225,6 +226,7 @@ impl Session {
                 ime_caret_before,
                 rev_before,
                 sel_before: &sel_before,
+                params,
             }),
             Err(e) => {
                 self.ime_edit_outcome = ImeEditOutcome::default();
@@ -293,6 +295,7 @@ impl Session {
             ime_caret_before,
             rev_before,
             sel_before,
+            params,
         } = context;
         let mut no_op = false;
         if spec.mutates {
@@ -386,6 +389,10 @@ impl Session {
         }
         if spec.mutates && !no_op && !matches!(id, "edit.undo" | "edit.redo") {
             self.note_edit();
+        }
+        // kosmos: an edit of this document goes to the collaboration as a proposal (Craft Signal).
+        if spec.mutates && !no_op {
+            self.signal_record(id, params, sel_before);
         }
         // Outline view: collapsed headings follow edits; the caret stays where it shows.
         crate::cmd::outline::after_command(self, sel_before, self.rev != rev_before);

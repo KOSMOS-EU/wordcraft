@@ -248,6 +248,7 @@ impl Session {
             clip_history: _,
             registry: _,
             edms: _,
+            signal: _,
             author: _,
             initials: _,
             painter: _,

@@ -88,6 +88,7 @@ impl Session {
             page_hint: _,
             registry: _,
             edms: _,
+            signal: _,
             author: _,
             initials: _,
             painter: _,
