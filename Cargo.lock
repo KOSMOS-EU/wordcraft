@@ -7252,6 +7252,7 @@ name = "wordcraft-web"
 version = "0.18.1"
 dependencies = [
  "craft-edms",
+ "craft-signal",
  "craft-web-api",
  "craft-web-host",
  "eframe",

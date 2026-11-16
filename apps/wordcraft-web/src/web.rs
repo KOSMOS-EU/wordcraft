@@ -15,6 +15,7 @@ const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "wmf",
 const RECIPIENT_EXTS: &[&str] = wordcraft_engine::cmd::mailings::RECIPIENT_EXTENSIONS;
 mod edms_transport;
 mod font_store;
+mod signal_transport;
 const CANVAS_ID: &str = "wordcraft_canvas";
 const LOADING_ID: &str = "wordcraft_loading";
 
@@ -75,6 +76,8 @@ pub fn start() {
                     // kosmos: the EDMS module over the browser's fetch; the host page connects it
                     // with its token (`edms.connect`) and names the document's place (`edms.adopt`).
                     session.edms.install(Box::new(craft_edms::Client::new(edms_transport::FetchTransport::new(cc.egui_ctx.clone()))));
+                    // kosmos: Craft Signal over the browser's WebSocket; `signal.connect` joins.
+                    session.signal.install(Box::new(craft_signal::Client::new(signal_transport::WebSocketTransport::new(cc.egui_ctx.clone()))));
                     let messages = Rc::new(RefCell::new(Vec::new()));
                     let mut services = services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone(), messages.clone());
                     if let Some(bridge) = &app_bridge {
