@@ -49,6 +49,10 @@ pub enum Action {
     },
     Lock,
     Unlock,
+    /// The stat after an open: the rights (and the id, if the GET did not name it) of `document`.
+    Rights {
+        document: u64,
+    },
 }
 
 /// Where a document lives and how it relates to the server's version.
@@ -119,6 +123,11 @@ impl EdmsState {
             Some(port) => Ok(port),
             None => Err(CmdError::Disabled("this build has no EDMS transport".into())),
         }
+    }
+
+    /// The `Authorization` value of the connection, for the front end's event stream.
+    pub fn authorization(&self) -> Option<String> {
+        self.port.as_ref().and_then(|p| p.config()).map(|c| c.authorization())
     }
 
     /// This client's id for the server's events (`Initiator-ID`), once connected.
@@ -290,6 +299,10 @@ impl Session {
             value["advice"] = json!(advice_name(advice));
             self.push_ui_request(json!({"edms": {"advice": advice_name(advice), "reason": "saveRejected"}}));
         }
+        // An open nobody watches (the host named the place and left) must not fail silently.
+        if matches!(action, Action::Open { .. } | Action::Reload) {
+            self.push_ui_request(json!({"edms": {"event": "openFailed", "message": error.to_string()}}));
+        }
         value
     }
 
@@ -301,7 +314,32 @@ impl Session {
             }
             (Action::Plain, Reply::Entries(entries)) => Ok(json!({"entries": entries.iter().map(entry_json).collect::<Vec<_>>()})),
             (Action::Plain, Reply::Entry(entry)) => Ok(json!({"entry": entry_json(&entry)})),
-            (Action::Open { name }, Reply::Bytes { bytes, etag, file_id, .. }) => self.edms_open_bytes(request, name, &bytes, etag, file_id, false),
+            (Action::Open { name }, Reply::Bytes { bytes, etag, file_id, .. }) => {
+                let opened = self.edms_open_bytes(request, name, &bytes, etag, file_id, false)?;
+                // The GET carries no rights: a stat follows, so the document is writable without
+                // anyone handing the rights in afterwards.
+                if let Request::Get { drive_id, path } = request {
+                    let document = self.document_id();
+                    if let Err(error) =
+                        self.edms.submit(Request::Stat { drive_id: drive_id.clone(), path: path.clone() }, Action::Rights { document })
+                    {
+                        log::warn!("edms.open: no stat for the rights: {error:?}");
+                    }
+                }
+                Ok(opened)
+            }
+            (Action::Rights { document }, Reply::Entry(entry)) => {
+                let Some(doc) = self.edms.document_mut(*document) else {
+                    return Ok(json!({"rights": false, "document": document}));
+                };
+                doc.location.permissions = entry.permissions.clone();
+                if doc.location.item_id.is_none() {
+                    doc.location.item_id = entry.id.clone();
+                }
+                Ok(
+                    json!({"rights": true, "document": document, "writable": doc.location.writable(), "permissions": doc.location.permissions.letters()}),
+                )
+            }
             (Action::Reload, Reply::Bytes { bytes, etag, file_id, .. }) => {
                 let name = self.edms.document(self.document_id()).map(|d| d.name.clone()).unwrap_or_else(|| "document".into());
                 self.edms_open_bytes(request, &name, &bytes, etag, file_id, true)
@@ -439,6 +477,7 @@ fn action_name(action: &Action, kind: &str) -> String {
         Action::Fetch { .. } => "fetch".into(),
         Action::Lock => "lock".into(),
         Action::Unlock => "unlock".into(),
+        Action::Rights { .. } => "rights".into(),
     }
 }
 

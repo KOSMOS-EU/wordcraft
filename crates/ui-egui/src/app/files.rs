@@ -569,8 +569,19 @@ impl WordApp {
                 "opened" => tl!("Opened from the cloud"),
                 "reloaded" => tl!("Reloaded the cloud version"),
                 "relocated" => tl!("Saved as a new file in the cloud"),
+                "openFailed" => {
+                    let message = edms.get("message").and_then(Value::as_str).unwrap_or("");
+                    self.status(crate::i18n::fmt(tl!("Opening from the cloud failed: {message}"), &[("message", message)]));
+                    return;
+                }
                 _ => return,
             };
+            // A document that arrived from the EDMS is what the window shows, whoever asked for
+            // it: File (the Start screen of a launch without a document) gives way.
+            if matches!(event, "opened" | "reloaded") {
+                self.ui.backstage = false;
+                self.canvas.want_focus = true;
+            }
             self.status(text.to_string());
         }
         if let Some(advice) = edms.get("advice").and_then(Value::as_str) {

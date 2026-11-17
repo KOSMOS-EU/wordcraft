@@ -13,6 +13,7 @@ const DOC_EXTS: &[&str] =
     &["docx", "docm", "dotx", "dotm", "doc", "dot", "odt", "ott", "fodt", "rtf", "txt", "md", "html", "htm", "mht", "mhtml", "tex", "json", "xml"];
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "wmf", "emf"];
 const RECIPIENT_EXTS: &[&str] = wordcraft_engine::cmd::mailings::RECIPIENT_EXTENSIONS;
+mod edms_events;
 mod edms_transport;
 mod font_store;
 mod signal_transport;
@@ -120,7 +121,8 @@ pub fn start() {
                         // `?localFiles=0`: server-only, every file goes through the EDMS.
                         app.embed.local_files = query_flag("localFiles").unwrap_or(true);
                     }
-                    Ok(Box::new(WebShell { app, inbox, messages, prefs }))
+                    let edms_events = edms_events::EdmsEvents::new(cc.egui_ctx.clone());
+                    Ok(Box::new(WebShell { app, inbox, messages, prefs, edms_events }))
                 }),
             )
             .await;
@@ -165,6 +167,8 @@ struct WebShell {
     inbox: Inbox,
     messages: Rc<RefCell<Vec<String>>>,
     prefs: crate::prefs::PrefsSync,
+    /// kosmos: the app's own reader of the server's events for the EDMS module.
+    edms_events: edms_events::EdmsEvents,
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
@@ -185,6 +189,7 @@ impl eframe::App for WebShell {
         for msg in msgs {
             self.app.status(msg);
         }
+        self.edms_events.frame(&mut self.app);
         self.app.logic(ctx);
         // Store changed preferences straight away: a reload or closed tab runs no exit code (#2132).
         if let Some(json) = self.prefs.changed(&self.app) {

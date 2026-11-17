@@ -278,3 +278,41 @@ fn fetch_hands_the_bytes_to_the_front_end_without_opening_them() {
     assert_eq!(rest["results"].as_array().map(Vec::len), Some(1));
     assert_eq!(rest["results"][0]["id"].as_u64(), Some(a));
 }
+
+/// `edms.open` needs nobody to hand the rights in: a stat follows the GET, and the document is
+/// writable once it answers. A launcher names the place and is done.
+#[test]
+fn an_opened_document_gets_its_rights_from_a_stat_of_its_own() {
+    let (mut s, transport) = connected();
+    let id = pending_id(&s.run("edms.open", &json!({"drive": DRIVE, "path": "/craft-test.docx"})).unwrap());
+    transport.answer(id, HttpResponse::new(200).with_header("ETag", "\"e1\"").with_body(docx_bytes("Hello EDMS")));
+    poll_one(&mut s);
+    assert_eq!(s.run("edms.status", &json!({})).unwrap()["document"]["writable"], json!(false), "no rights before the stat");
+    let (stat_id, request) = transport.last_started().unwrap();
+    assert_eq!(request.method, Method::Propfind);
+    assert_eq!(request.header_value("depth"), Some("0"));
+    assert!(request.url.ends_with("/craft-test.docx"));
+    let multistatus = format!(
+        "<?xml version=\"1.0\"?><d:multistatus xmlns:d=\"DAV:\" xmlns:oc=\"http://owncloud.org/ns\"><d:response>\
+         <d:href>/dav/spaces/{DRIVE}/craft-test.docx</d:href><d:propstat><d:prop><d:getetag>\"e1\"</d:getetag>\
+         <oc:fileid>{FILE_ID}</oc:fileid><oc:permissions>RDNVWZP</oc:permissions><oc:name>craft-test.docx</oc:name>\
+         </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"
+    );
+    transport.answer(stat_id, HttpResponse::new(207).with_body(multistatus));
+    let rights = poll_one(&mut s);
+    assert_eq!((rights["kind"].as_str(), rights["rights"].as_bool(), rights["writable"].as_bool()), (Some("rights"), Some(true), Some(true)));
+    let status = s.run("edms.status", &json!({})).unwrap();
+    assert_eq!((status["document"]["writable"].as_bool(), status["document"]["id"].as_str()), (Some(true), Some(FILE_ID)));
+}
+
+/// An open that fails tells the front end, so a launch that only named the place shows why
+/// nothing came.
+#[test]
+fn a_failed_open_is_reported_to_the_front_end() {
+    let (mut s, transport) = connected();
+    let id = pending_id(&s.run("edms.open", &json!({"drive": DRIVE, "path": "/missing.docx"})).unwrap());
+    transport.answer(id, HttpResponse::new(404));
+    let failed = poll_one(&mut s);
+    assert_eq!(failed["ok"], json!(false));
+    assert!(s.ui_requests.iter().any(|r| r["edms"]["event"] == "openFailed"));
+}
