@@ -1292,3 +1292,23 @@ fn rtl_template_titles_are_right_aligned() {
         wide_text_right,
     );
 }
+
+/// kosmos: a document that arrives from the EDMS while nobody touches the app replaces the Start
+/// screen in the next frame; the pump's request to the interface doesn't wait for a command.
+#[test]
+fn a_document_from_the_edms_replaces_the_start_screen_without_a_command() {
+    let mut app = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+    app.start_screen();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+        |ui, app: &mut WordApp| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    assert!(h.state().ui.backstage, "the Start screen shows at first");
+    h.state_mut().session.ui_requests.push(json!({"edms": {"event": "opened"}}));
+    h.run_steps(2);
+    assert!(!h.state().ui.backstage, "the Start screen gave way to the document");
+}

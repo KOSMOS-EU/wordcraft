@@ -264,6 +264,15 @@ impl WordApp {
         crate::edms_browser::poll(self);
         // kosmos: the collaboration's commits land as edits, its events as ui requests.
         self.session.signal_pump();
+        // kosmos: what the pumps ask of the interface (a document arrived from the EDMS: File gives
+        // way) is done in this frame. Requests are otherwise only handled after a command, and no
+        // command runs while the user just waits for the document.
+        if !self.session.ui_requests.is_empty() {
+            for request in std::mem::take(&mut self.session.ui_requests) {
+                self.handle_request(&request);
+            }
+            ctx.request_repaint();
+        }
         // Chinese text wants the Chinese face before the Japanese one (one glyph style per line).
         // An installed CJK font is read only once CJK text is shown (#241): a CJK interface, the
         // language names in Options, or a file name the caption is drawing. A file opened later
