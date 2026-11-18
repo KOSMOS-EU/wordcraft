@@ -397,6 +397,11 @@ fn home_page(app: &mut WordApp, ui: &mut Ui) {
             "Good evening"
         },
     );
+    // kosmos: the document this launch named didn't open; the Start screen says so itself.
+    if let Some(error) = &app.edms_open_error {
+        ui.label(egui::RichText::new(error).font(medium(14.0)).color(ui.visuals().error_fg_color));
+        ui.add_space(16.0);
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = vec2(18.0, 0.0);
         for (label, template) in TEMPLATES.into_iter().take(HOME_TEMPLATES) {

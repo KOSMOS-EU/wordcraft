@@ -316,3 +316,16 @@ fn a_failed_open_is_reported_to_the_front_end() {
     assert_eq!(failed["ok"], json!(false));
     assert!(s.ui_requests.iter().any(|r| r["edms"]["event"] == "openFailed"));
 }
+
+/// kosmos: bytes that are no document (a PDF named .docx) are a failed open too, and the front
+/// end learns which file it was.
+#[test]
+fn bytes_that_are_no_document_are_reported_as_a_failed_open() {
+    let (mut s, transport) = connected();
+    let id = pending_id(&s.run("edms.open", &json!({"drive": DRIVE, "path": "/Scan.docx"})).unwrap());
+    transport.answer(id, HttpResponse::new(200).with_body(b"%PDF-1.7 not a zip".to_vec()));
+    let failed = poll_one(&mut s);
+    assert_eq!(failed["ok"], json!(false));
+    let request = s.ui_requests.iter().find(|r| r["edms"]["event"] == "openFailed").expect("the front end is told");
+    assert_eq!(request["edms"]["name"], json!("Scan.docx"));
+}

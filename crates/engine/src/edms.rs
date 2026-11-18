@@ -281,6 +281,9 @@ impl Session {
                     value
                 }
                 Err(error) => {
+                    // The bytes came but are no document (a PDF named .docx): as much a failed
+                    // open as a file that isn't there.
+                    self.report_failed_open(&action, &error.to_string());
                     json!({"id": outcome.id, "kind": action_name(&action, kind), "ok": false, "error": {"code": "apply", "message": error.to_string()}})
                 }
             },
@@ -300,10 +303,18 @@ impl Session {
             self.push_ui_request(json!({"edms": {"advice": advice_name(advice), "reason": "saveRejected"}}));
         }
         // An open nobody watches (the host named the place and left) must not fail silently.
-        if matches!(action, Action::Open { .. } | Action::Reload) {
-            self.push_ui_request(json!({"edms": {"event": "openFailed", "message": error.to_string()}}));
-        }
+        self.report_failed_open(action, &error.to_string());
         value
+    }
+
+    /// Tell the front end that an open or a reload brought no document, with the file's name.
+    fn report_failed_open(&mut self, action: &Action, message: &str) {
+        let name = match action {
+            Action::Open { name } => name.clone(),
+            Action::Reload => self.edms.document(self.document_id()).map(|d| d.name.clone()).unwrap_or_default(),
+            _ => return,
+        };
+        self.push_ui_request(json!({"edms": {"event": "openFailed", "name": name, "message": message}}));
     }
 
     fn edms_apply(&mut self, action: &Action, request: &Request, reply: Reply) -> Result<Value, CmdError> {

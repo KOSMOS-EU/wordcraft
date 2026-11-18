@@ -428,7 +428,8 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                     crate::i18n::isolate(&app.title_stem()),
                     if app.session.dirty {
                         tl!("Edited")
-                    } else if app.session.path.is_some() {
+                    } else if app.session.path.is_some() || app.session.edms.document(app.session.document_id()).is_some() {
+                        // kosmos: a document of the EDMS has its place there, without a local path.
                         tl!("Saved")
                     } else {
                         tl!("Not saved")

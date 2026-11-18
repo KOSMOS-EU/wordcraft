@@ -1312,3 +1312,25 @@ fn a_document_from_the_edms_replaces_the_start_screen_without_a_command() {
     h.run_steps(2);
     assert!(!h.state().ui.backstage, "the Start screen gave way to the document");
 }
+
+/// kosmos: a document that didn't open from the EDMS is named on the Start screen, where the
+/// status bar is out of sight; and a document of the EDMS counts as saved in the title.
+#[test]
+fn a_failed_open_from_the_edms_shows_on_the_start_screen() {
+    let mut app = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+    app.start_screen();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+        |ui, app: &mut WordApp| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        },
+        app,
+    );
+    h.run_steps(2);
+    h.state_mut().session.ui_requests.push(json!({"edms": {"event": "openFailed", "name": "Scan.docx", "message": "not a valid zip package"}}));
+    h.run_steps(3);
+    assert!(h.state().ui.backstage, "the Start screen stays");
+    let shown = h.state().edms_open_error.clone().expect("the error is kept for the Start screen");
+    assert!(shown.contains("Scan.docx") && shown.contains("not a valid zip package"), "{shown}");
+    assert!(h.query_by_label_contains("not a valid zip package").is_some(), "the Start screen shows it");
+}

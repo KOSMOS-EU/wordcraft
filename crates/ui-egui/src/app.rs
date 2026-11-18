@@ -143,6 +143,7 @@ impl WordApp {
             ctx: None,
             ime_origin: false,
             read_aloud_error: None,
+            edms_open_error: None,
             autosave_path: None,
             saves_in_flight: Vec::new(),
             font_generation: wordcraft_fonts::FontDb::global().generation(),
@@ -471,6 +472,7 @@ impl WordApp {
         crate::keys::field_alt_codes(self, &ctx);
         // A failed Recent open, or a failed Save As, is news only until File closes (#2938).
         if !self.ui.backstage {
+            self.edms_open_error = None;
             backstage::forget_open_error(&ctx);
             backstage::forget_save_as_error(&ctx);
         }

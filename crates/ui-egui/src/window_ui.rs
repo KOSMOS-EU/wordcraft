@@ -210,6 +210,7 @@ impl WordApp {
             zotero: _,
             ctx: _,
             read_aloud_error: _,
+            edms_open_error: _,
             saves_in_flight: _,
             recovery_seen: _,
             no_document: _,

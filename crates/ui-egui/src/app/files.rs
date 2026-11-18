@@ -572,6 +572,11 @@ impl WordApp {
                 "openFailed" => {
                     let message = edms.get("message").and_then(Value::as_str).unwrap_or("");
                     self.status(crate::i18n::fmt(tl!("Opening from the cloud failed: {message}"), &[("message", message)]));
+                    // The status bar is behind File: the Start screen of a launch that named this
+                    // file says it too, in the words a local file that wouldn't open gets.
+                    let name = edms.get("name").and_then(Value::as_str).unwrap_or("");
+                    self.edms_open_error =
+                        Some(crate::i18n::fmt(tl!("Couldn't open {path}: {error}"), &[("path", &crate::i18n::isolate(name)), ("error", message)]));
                     return;
                 }
                 _ => return,
@@ -581,6 +586,7 @@ impl WordApp {
             if matches!(event, "opened" | "reloaded") {
                 self.ui.backstage = false;
                 self.canvas.want_focus = true;
+                self.edms_open_error = None;
             }
             self.status(text.to_string());
         }
