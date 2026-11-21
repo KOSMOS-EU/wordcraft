@@ -219,7 +219,7 @@ async fn fetch_ticket(url: &str, auth: &str, body: &str) -> Result<String, Strin
     init.set_headers(&headers);
     init.set_body(&wasm_bindgen::JsValue::from_str(body));
     let window = web_sys::window().ok_or("no window")?;
-    let response = JsFuture::from(window.fetch_with_str_and_init(url, &init)).await.map_err(js_error)?;
+    let response = JsFuture::from(window.fetch_with_str_and_init(&super::uncached(url, &init), &init)).await.map_err(js_error)?;
     let response: web_sys::Response = response.dyn_into().map_err(|_| "fetch gave no Response".to_string())?;
     let status = response.status();
     let buffer = JsFuture::from(response.array_buffer().map_err(js_error)?).await.map_err(js_error)?;

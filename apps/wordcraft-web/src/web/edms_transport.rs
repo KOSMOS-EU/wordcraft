@@ -65,7 +65,7 @@ async fn fetch(request: HttpRequest) -> Result<HttpResponse, String> {
         init.set_body(&body);
     }
     let window = web_sys::window().ok_or("no window")?;
-    let response = JsFuture::from(window.fetch_with_str_and_init(&request.url, &init)).await.map_err(js_error)?;
+    let response = JsFuture::from(window.fetch_with_str_and_init(&super::uncached(&request.url, &init), &init)).await.map_err(js_error)?;
     let response: web_sys::Response = response.dyn_into().map_err(|_| "fetch gave no Response".to_string())?;
     let status = response.status();
     let mut answer = HttpResponse::new(status);

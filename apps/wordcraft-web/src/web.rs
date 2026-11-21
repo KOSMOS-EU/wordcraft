@@ -17,6 +17,21 @@ mod edms_events;
 mod edms_transport;
 mod font_store;
 mod signal_transport;
+
+/// kosmos: `url` with the time as a query parameter (`t`), and `init` told not to use the
+/// browser's cache. Every request of the app goes out so: a browser otherwise answers from its
+/// cache, also where the server says `no-store`, and the app would open an old version of a
+/// document (with its old ETag, so that saving ends in a conflict).
+fn uncached(url: &str, init: &web_sys::RequestInit) -> String {
+    init.set_cache(web_sys::RequestCache::NoStore);
+    let (address, fragment) = url.split_once('#').map_or((url, None), |(address, fragment)| (address, Some(fragment)));
+    let separator = if address.contains('?') { '&' } else { '?' };
+    let stamped = format!("{address}{separator}t={}", js_sys::Date::now() as u64);
+    match fragment {
+        Some(fragment) => format!("{stamped}#{fragment}"),
+        None => stamped,
+    }
+}
 const CANVAS_ID: &str = "wordcraft_canvas";
 const LOADING_ID: &str = "wordcraft_loading";
 
