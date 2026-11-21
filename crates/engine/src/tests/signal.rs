@@ -761,3 +761,47 @@ fn the_same_change_to_two_frames_of_one_size_stays_two_pictures() {
     assert_eq!(s.doc.media.len(), 4);
     assert!(sizes.iter().all(|size| *size > 4096), "no frame is left: {sizes:?}");
 }
+
+#[test]
+fn the_master_answers_a_sync_request_with_the_document_as_it_is_now() {
+    let (mut s, transport) = session();
+    joined(&mut s, &transport, 1, 0, 1, 0);
+    bulk_ready(&mut s, &transport);
+    s.run("text.insert", &json!({"text": "Stand vor dem Beitritt"})).unwrap();
+    transport.take_sent();
+    transport.take_bulk_sent();
+
+    let mut asking = Frame::new(FrameType::SyncReq);
+    asking.session = 1;
+    asking.sender = 3;
+    transport.deliver(asking);
+    s.signal_pump();
+
+    let sent = transport.take_sent();
+    assert_eq!((sent.len(), sent[0].kind, sent[0].sender, sent[0].seq), (1, FrameType::Sync, 3, 1), "to the one who asked, up to the last commit");
+    let payload: craft_signal::SyncPayload = wire::decode(&sent[0].payload).unwrap();
+    assert_eq!(payload.format, "docx");
+    // The blob on the bulk channel is that document.
+    let mut state = Vec::new();
+    for frame in transport.take_bulk_sent().iter().filter(|frame| frame.kind == FrameType::BlobPart) {
+        let (hash, offset, data) = blobs::decode_part(&frame.payload).unwrap();
+        assert_eq!((hash, offset as usize), (payload.state.hash, state.len()));
+        state.extend_from_slice(data);
+    }
+    assert_eq!((state.len() as u64, blobs::hash_of(&state)), (payload.state.size, payload.state.hash));
+    let reopened = crate::io::open_bytes("state.docx", &state).unwrap();
+    assert_eq!(reopened.plain_text(wordcraft_doc::StoryRef::Body), "Stand vor dem Beitritt");
+    assert!(s.dirty, "answering is not a save: the document stays as changed as it was");
+    let log = s.signal.take_log();
+    assert!(log.iter().any(|entry| entry["event"] == "syncRequested" && entry["answered"] == true), "{log:?}");
+
+    // A collaborator is not asked and does not answer.
+    let (mut other, their_transport) = session();
+    joined(&mut other, &their_transport, 2, 1, 1, 0);
+    let mut stray = Frame::new(FrameType::SyncReq);
+    stray.session = 1;
+    stray.sender = 3;
+    their_transport.deliver(stray);
+    other.signal_pump();
+    assert!(their_transport.take_sent().is_empty());
+}

@@ -45,6 +45,10 @@ const MASTER_CHANGED: &str = "master changed";
 /// and travels as a blob on the bulk channel (SIGNAL.md, "Vorschau vor Bestätigung").
 const MIN_DETACHED_BYTES: usize = 256;
 
+/// The state a master answers a sync request with: the document as a `.docx` copy.
+const SYNC_STATE_FORMAT: &str = "docx";
+const SYNC_STATE_NAME: &str = "state.docx";
+
 /// The paragraphs a command's anchor names: from the first to the last of its selection, in one
 /// story. `None` when the anchor is missing or spans stories.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -589,7 +593,20 @@ impl Session {
                 }
             }
             Incoming::SyncRequested { sender, base } => {
-                self.signal.note(json!({"event": "syncRequested", "sender": sender, "base": base}));
+                // The master's whole document as it is now, as a copy (no save stamps): the bytes
+                // go as a blob, the answer names them. Commits after `base` are not sent singly.
+                let answered = crate::cmd::edms::copy_bytes(self, SYNC_STATE_NAME).map_err(|e| e.to_string()).and_then(|state| {
+                    let size = state.len();
+                    let port = self.signal.port.as_mut().ok_or_else(|| "no Craft Signal transport".to_string())?;
+                    port.answer_sync(sender, SYNC_STATE_FORMAT, state).map(|hash| (hash, size)).map_err(|e| e.to_string())
+                });
+                let entry = match answered {
+                    Ok((hash, size)) => {
+                        json!({"event": "syncRequested", "sender": sender, "base": base, "answered": true, "hash": craft_signal::blobs::hex(&hash), "size": size})
+                    }
+                    Err(error) => json!({"event": "syncRequested", "sender": sender, "base": base, "answered": false, "error": error}),
+                };
+                self.signal.note(entry);
             }
             Incoming::Sync { .. } | Incoming::Presence { .. } => {}
             Incoming::Saved { seq } => {

@@ -258,7 +258,7 @@ fn document_bytes(s: &mut Session, name: &str) -> Result<Vec<u8>, CmdError> {
 }
 
 /// A copy's bytes: no stamps, the document is unchanged (export).
-fn copy_bytes(s: &Session, name: &str) -> Result<Vec<u8>, CmdError> {
+pub(crate) fn copy_bytes(s: &Session, name: &str) -> Result<Vec<u8>, CmdError> {
     if !craft_edms::location::valid_name(name) {
         return Err(CmdError::Params(format!("invalid file name: {name:?}")));
     }
