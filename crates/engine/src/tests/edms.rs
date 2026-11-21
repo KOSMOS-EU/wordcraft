@@ -329,3 +329,223 @@ fn bytes_that_are_no_document_are_reported_as_a_failed_open() {
     let request = s.ui_requests.iter().find(|r| r["edms"]["event"] == "openFailed").expect("the front end is told");
     assert_eq!(request["edms"]["name"], json!("Scan.docx"));
 }
+
+#[test]
+fn a_sidecar_is_fetched_relative_to_its_document_and_announced() {
+    let (mut s, transport) = connected();
+    assert!(s.run("edms.pwd", &json!({})).is_err(), "a document without a place has no working directory");
+    assert!(s.run("edms.sidecar", &json!({"path": "logo.png"})).is_err());
+    s.run("edms.adopt", &json!({"drive": DRIVE, "path": "/Projekte/2026/Bericht.docx", "etag": "\"h1\""})).unwrap();
+    let document = s.document_id();
+    let pwd = s.run("edms.pwd", &json!({})).unwrap();
+    assert_eq!((pwd["drive"].as_str(), pwd["folder"].as_str(), pwd["document"].as_u64()), (Some(DRIVE), Some("/Projekte/2026"), Some(document)));
+
+    assert!(s.run("edms.sidecar", &json!({"path": "/abs/logo.png"})).is_err());
+    assert!(s.run("edms.sidecar", &json!({"path": "../../../logo.png"})).is_err(), "out of the space");
+    assert!(s.run("edms.sidecar", &json!({"path": "logo.png", "document": document + 1000})).is_err(), "no such document");
+    let first = s.run("edms.sidecar", &json!({"path": "bilder/logo.png", "document": document})).unwrap();
+    assert_eq!(first["state"], json!("pending"));
+    let (request_id, request) = transport.last_started().unwrap();
+    assert_eq!(request.method, Method::Get);
+    assert!(request.url.ends_with("/Projekte/2026/bilder/logo.png"), "{}", request.url);
+    s.run("edms.sidecar", &json!({"path": "bilder/logo.png"})).unwrap();
+    assert_eq!(transport.started().len(), 1, "asked twice, fetched once");
+
+    transport
+        .answer(request_id, HttpResponse::new(200).with_header("etag", "\"p1\"").with_header("content-type", "image/png").with_body(&b"PNG"[..]));
+    let polled = s.run("edms.poll", &json!({})).unwrap();
+    assert!(polled["results"].as_array().unwrap().is_empty(), "a sidecar is no command result: {polled}");
+    assert!(s.ui_requests.iter().any(|r| r["edms"]["event"] == "sidecar" && r["edms"]["document"] == json!(document)), "{:?}", s.ui_requests);
+    let ready = s.run("edms.sidecar", &json!({"path": "bilder/logo.png", "data": true})).unwrap();
+    assert_eq!((ready["state"].as_str(), ready["size"].as_u64(), ready["data"].as_str()), (Some("ready"), Some(3), Some("UE5H")));
+    assert_eq!(ready["contentType"], json!("image/png"));
+
+    // A missing file is a state, not a command error; `refresh` tries again.
+    s.run("edms.sidecar", &json!({"path": "fehlt.csv"})).unwrap();
+    transport.answer(transport.last_started().unwrap().0, HttpResponse::new(404));
+    s.edms_pump();
+    let failed = s.run("edms.sidecar", &json!({"path": "fehlt.csv"})).unwrap();
+    assert_eq!((failed["state"].as_str(), failed["error"]["code"].as_str()), (Some("failed"), Some("notFound")));
+    assert_eq!(transport.started().len(), 2);
+    assert_eq!(s.run("edms.sidecar", &json!({"path": "fehlt.csv", "refresh": true})).unwrap()["state"], json!("pending"));
+    assert_eq!(transport.started().len(), 3);
+
+    // Closing the document drops what it held.
+    assert_eq!(s.edms.sidecar_bytes(), 3);
+    s.close_document(document).unwrap();
+    assert_eq!(s.edms.sidecar_bytes(), 0);
+}
+
+/// A 1×1 PNG.
+const PIXEL: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+fn pictures(s: &mut Session) -> usize {
+    crate::io::save_bytes("x.docx", &s.doc).map(|bytes| bytes.windows(4).filter(|w| *w == &PIXEL[..4]).count()).unwrap_or(0)
+}
+
+#[test]
+fn a_command_runs_once_with_the_file_from_beside_the_document() {
+    let (mut s, transport) = connected();
+    s.run("edms.adopt", &json!({"drive": DRIVE, "path": "/Projekte/Bericht.docx", "etag": "\"h1\""})).unwrap();
+    let document = s.document_id();
+
+    // The fetch starts; the command has not run.
+    let first = s.run("edms.runWith", &json!({"command": "insert.picture", "path": "bilder/pixel.png"})).unwrap();
+    assert_eq!(
+        (first["pending"].as_str(), first["path"].as_str(), first["document"].as_u64()),
+        (Some("sidecar"), Some("bilder/pixel.png"), Some(document))
+    );
+    assert_eq!(s.edms.deferred(), 1);
+    assert!(!s.dirty && s.last_command.is_none(), "nothing ran yet");
+    let (request_id, request) = transport.last_started().unwrap();
+    assert!(request.url.ends_with("/Projekte/bilder/pixel.png"), "{}", request.url);
+    s.edms_pump();
+    assert_eq!(s.edms.deferred(), 1, "nothing arrived yet");
+
+    // The answer runs the command, once, with the bytes in it.
+    transport.answer(request_id, HttpResponse::new(200).with_body(PIXEL));
+    let done = poll_one(&mut s);
+    assert_eq!(
+        (done["kind"].as_str(), done["ok"].as_bool(), done["command"].as_str()),
+        (Some("deferred"), Some(true), Some("insert.picture")),
+        "{done}"
+    );
+    assert_eq!(s.edms.deferred(), 0);
+    assert_eq!(pictures(&mut s), 1);
+    let (ran, params) = s.last_command.clone().unwrap();
+    assert_eq!(ran, "insert.picture");
+    assert!(params["data"].as_str().is_some_and(|data| !data.is_empty()), "the command carries the bytes");
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(pictures(&mut s), 0, "one command, one undo step");
+
+    // From the cache the command runs at once.
+    let again = s.run("edms.runWith", &json!({"command": "insert.picture", "path": "bilder/pixel.png"})).unwrap();
+    assert_eq!(again["ran"], json!(true), "{again}");
+    assert_eq!((pictures(&mut s), transport.started().len()), (1, 1));
+
+    // A file that isn't there: the command never runs, the failure is loud, a new try fetches again.
+    s.ui_requests.clear();
+    s.run("edms.runWith", &json!({"command": "insert.picture", "path": "fehlt.png"})).unwrap();
+    transport.answer(transport.last_started().unwrap().0, HttpResponse::new(404));
+    let failed = poll_one(&mut s);
+    assert_eq!((failed["kind"].as_str(), failed["ok"].as_bool()), (Some("deferred"), Some(false)));
+    assert!(failed["error"]["message"].as_str().unwrap().contains("fehlt.png"), "{failed}");
+    assert!(s.ui_requests.iter().any(|r| r["edms"]["event"] == "sidecarFailed"));
+    assert_eq!((s.edms.deferred(), pictures(&mut s)), (0, 1));
+    assert_eq!(s.run("edms.runWith", &json!({"command": "insert.picture", "path": "fehlt.png"})).unwrap()["pending"], json!("sidecar"));
+    assert_eq!(transport.started().len(), 3);
+
+    assert!(s.run("edms.runWith", &json!({"command": "no.such", "path": "a.png"})).is_err());
+    assert!(s.run("edms.runWith", &json!({"command": "edms.runWith", "path": "a.png"})).is_err());
+}
+
+#[test]
+fn the_other_parameters_and_the_name_of_the_bytes_are_the_callers() {
+    let (mut s, transport) = connected();
+    // A document outside the EDMS has no folder to read from; commands read paths as before.
+    assert!(s.run("edms.runWith", &json!({"command": "insert.picture", "path": "a.png"})).is_err());
+    let error = s.run("insert.picture", &json!({"path": "bilder/gibt-es-nicht.png"})).unwrap_err();
+    assert!(!error.to_string().contains("EDMS"), "{error}");
+    assert!(transport.started().is_empty());
+    assert_eq!(s.edms.deferred(), 0);
+
+    s.run("edms.adopt", &json!({"drive": DRIVE, "path": "/Serienbrief/Brief.docx", "etag": "\"h1\""})).unwrap();
+    let first = s
+        .run(
+            "edms.runWith",
+            &json!({"command": "mailings.recipients", "path": "daten/empfaenger.csv", "as": "data", "params": {"path": "empfaenger.csv"}}),
+        )
+        .unwrap();
+    assert_eq!(first["pending"], json!("sidecar"), "{first}");
+    let (request_id, request) = transport.last_started().unwrap();
+    assert!(request.url.ends_with("/Serienbrief/daten/empfaenger.csv"), "{}", request.url);
+    transport.answer(request_id, HttpResponse::new(200).with_body(&b"Name,Ort\nAda,Brandis\nBob,Leipzig\n"[..]));
+    let done = poll_one(&mut s);
+    assert_eq!(
+        (done["kind"].as_str(), done["ok"].as_bool(), done["command"].as_str()),
+        (Some("deferred"), Some(true), Some("mailings.recipients")),
+        "{done}"
+    );
+    let again = s
+        .run("edms.runWith", &json!({"command": "mailings.recipients", "path": "daten/empfaenger.csv", "params": {"path": "empfaenger.csv"}}))
+        .unwrap();
+    assert_eq!((again["ran"].as_bool(), again["result"]["records"].as_u64()), (Some(true), Some(2)), "{again}");
+}
+
+/// The parts of a docx, by name.
+fn unzip(docx: &[u8]) -> Vec<(String, Vec<u8>)> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(docx)).unwrap();
+    (0..archive.len())
+        .map(|index| {
+            let mut part = archive.by_index(index).unwrap();
+            let mut bytes = Vec::new();
+            part.read_to_end(&mut bytes).unwrap();
+            (part.name().to_string(), bytes)
+        })
+        .collect()
+}
+
+fn zip_parts(parts: &[(String, Vec<u8>)]) -> Vec<u8> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, bytes) in parts {
+        writer.start_file(name.as_str(), zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+/// A docx with one picture whose `a:blip` is rewritten by `blip` (given the `r:embed="…"`
+/// attribute as written) and that has an external relationship `rIdLink` to `bilder/logo.png`.
+fn docx_with_linked_picture(blip: impl Fn(&str) -> String) -> Vec<u8> {
+    let mut s = Session::new(blank_document(&wordcraft_geom::Region::default()));
+    s.run("insert.picture", &json!({"data": crate::cmd::insert::base64_encode(PIXEL)})).unwrap();
+    let mut parts = unzip(&crate::io::save_bytes("x.docx", &s.doc).unwrap());
+    for (name, bytes) in &mut parts {
+        let mut text = match name.as_str() {
+            "word/document.xml" | "word/_rels/document.xml.rels" => String::from_utf8(bytes.clone()).unwrap(),
+            _ => continue,
+        };
+        if name == "word/document.xml" {
+            let start = text.find("r:embed=\"").expect("the picture's blip");
+            let end = start + "r:embed=\"".len() + text[start + "r:embed=\"".len()..].find('"').unwrap() + 1;
+            let embed = text[start..end].to_string();
+            text.replace_range(start..end, &blip(&embed));
+        } else {
+            let link = r#"<Relationship Id="rIdLink" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="bilder/logo.png" TargetMode="External"/></Relationships>"#;
+            text = text.replace("</Relationships>", link);
+        }
+        *bytes = text.into_bytes();
+    }
+    zip_parts(&parts)
+}
+
+/// What WordCraft does with linked pictures today (kosmos, finding of 2026-11-21): nothing is
+/// fetched, a link without a copy is dropped at open, and a link beside a copy is not written
+/// back. This pins the behaviour the EDMS sidecars meet; it is not a wish.
+#[test]
+fn linked_pictures_are_not_kept_only_embedded_ones() {
+    // Link only: no picture, reported as missing with the link's target.
+    let link_only = docx_with_linked_picture(|_| r#"r:link="rIdLink""#.to_string());
+    let doc = crate::io::open_bytes("x.docx", &link_only).unwrap();
+    assert!(doc.media.is_empty(), "{:?}", doc.media.keys());
+    let missing: Vec<_> = doc.missing_pictures.list.iter().map(|m| (m.part.as_str(), m.reason)).collect();
+    assert_eq!(missing, [("bilder/logo.png", wordcraft_doc::MissingPictureReason::LinkOnly)]);
+
+    // Link and copy: the copy is the picture; the link is gone after a save.
+    let both = docx_with_linked_picture(|embed| format!(r#"{embed} r:link="rIdLink""#));
+    let doc = crate::io::open_bytes("x.docx", &both).unwrap();
+    assert_eq!((doc.media.len(), doc.missing_pictures.list.len()), (1, 0));
+    let saved = unzip(&crate::io::save_bytes("x.docx", &doc).unwrap());
+    let written: String = saved
+        .iter()
+        .filter(|(name, _)| name.ends_with(".xml") || name.ends_with(".rels"))
+        .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+        .collect();
+    assert!(written.contains("r:embed=") && !written.contains("r:link=") && !written.contains("bilder/logo.png"), "the link survived");
+}

@@ -4,10 +4,10 @@
 //! `Session::edms_pump`). See `opencraft/EDMS_NATIVE.md` §9.
 
 use craft_edms::events::RemoteEvent;
-use craft_edms::{Config, Location, Request};
+use craft_edms::{Config, EdmsError, Location, Lookup, Request};
 use serde_json::{Value, json};
 
-use crate::edms::{Action, advice_name};
+use crate::edms::{Action, advice_name, error_json};
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
 /// Default lock timeout, as the web client uses it.
@@ -41,15 +41,24 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("edms.fetch", "Fetch a file from the EDMS", EDMS, fetch)
             .params(r#"{"drive", "path": "/Folder/picture.png"} → {"pending": id}; result {"fetched": true, "name", "size", "data": base64}. The bytes as they are, for the front end (a picture to insert, a recipient list); nothing opens."#)
             .pure(),
+        CommandSpec::new("edms.pwd", "Working directory of a document", EDMS, pwd)
+            .params(r#"{"document"?: id (default: the active one)} → {"document", "drive", "folder": "/Folder"}. The folder the document lives in; paths of files beside it are relative to this. Fails for a document that was never saved to the EDMS."#)
+            .pure(),
+        CommandSpec::new("edms.sidecar", "A file beside a document", EDMS, sidecar)
+            .params(r#"{"path": "pictures/logo.png" (relative to the document; ".." may go up, never out of the space), "document"?: id (default: the active one), "data"?: true (include the bytes), "refresh"?: true (fetch again)} → {"document", "path", "state": "ready" | "pending" | "failed", "size"?, "etag"?, "contentType"?, "data"?: base64, "error"?: {"code", "message"}}. The first call starts the fetch and answers pending; ask again after the UI event {"edms": {"event": "sidecar", "document"}}."#)
+            .pure(),
+        CommandSpec::new("edms.runWith", "Run a command with a file beside the document", EDMS, run_with)
+            .params(r#"{"command": "insert.picture", "path": "pictures/logo.png" (relative to the active document), "params"?: the command's other parameters, "as"?: the parameter that takes the bytes as base64 (default "data")} → {"ran": true, "result"} when the file was at hand, else {"pending": "sidecar", "path", "document"}; then the command runs when the file has arrived, result {"kind": "deferred", "ok", "command", "path", "document", "error"?} in edms.poll. The command runs once, with the bytes; it does not run if the fetch fails."#)
+            .pure(),
         CommandSpec::new("edms.adopt", "Adopt the open document's EDMS location", EDMS, adopt)
             .params(r#"{"drive", "path": "/Folder/name.docx", "id"?: file id, "etag"?: the version the host loaded, "permissions"?: "RDNVWZP"} → {"adopted": true}. For a document the host page loaded itself: from now on edms.save, edms.saveAs and edms.event work on it."#)
             .pure(),
         CommandSpec::new("edms.save", "Save to the EDMS", EDMS, save)
-            .params(r#"{} → {"pending": id}; result {"saved": true, "etag"} or an error with code conflict (the server has a newer version: edms.reload or edms.saveAs)"#)
+            .params(r#"{"incomplete"?: true (save although the collaboration still owes content: what is only a preview is saved as the preview)} → {"pending": id}; result {"saved": true, "etag"} or an error with code conflict (the server has a newer version: edms.reload or edms.saveAs). In a collaboration with content still on its way the command refuses without "incomplete" and names what is missing."#)
             .when(needs_edms_document)
             .pure(),
         CommandSpec::new("edms.saveAs", "Save As in the EDMS", EDMS, save_as)
-            .params(r#"{"drive", "path": "/Folder", "name": "Copy.docx", "overwrite"?: false, "switch"?: true (the document lives at the copy from now on)} → {"pending": id}; result {"saved": true, "drive", "path", "etag"}"#)
+            .params(r#"{"drive", "path": "/Folder", "name": "Copy.docx", "overwrite"?: false, "switch"?: true (the document lives at the copy from now on)} → {"pending": id, "incomplete"?: [{"command", "key", "size", "seq"}] (in a collaboration: content still on its way, the copy holds its preview)}; result {"saved": true, "drive", "path", "etag"}"#)
             .pure(),
         CommandSpec::new("edms.export", "Export to the EDMS", EDMS, export)
             .params(r#"{"drive", "path": "/Folder", "name": "Report.pdf" (the extension picks the format), "overwrite"?: false} → {"pending": id}; result {"etag", "fileId"}"#)
@@ -167,6 +176,55 @@ fn fetch(s: &mut Session, v: &Value) -> CmdResult {
     pending(s, Request::Get { drive_id, path }, Action::Fetch { name })
 }
 
+fn edms_error(error: EdmsError) -> CmdError {
+    match error {
+        EdmsError::NotConnected => CmdError::Disabled(error.to_string()),
+        EdmsError::Params(p) => CmdError::Params(p),
+        other => CmdError::Failed(other.to_string()),
+    }
+}
+
+/// The document a command is about: the one it names, else the active one.
+fn document_of(s: &Session, v: &Value) -> u64 {
+    p::u64(v, "document").unwrap_or_else(|| s.document_id())
+}
+
+fn pwd(s: &mut Session, v: &Value) -> CmdResult {
+    let document = document_of(s, v);
+    let work_dir = s.edms.work_dir(document).map_err(edms_error)?;
+    Ok(json!({"document": document, "drive": work_dir.drive_id, "folder": work_dir.folder}))
+}
+
+fn sidecar(s: &mut Session, v: &Value) -> CmdResult {
+    let document = document_of(s, v);
+    let path = require(v, "path")?;
+    if p::bool(v, "refresh").unwrap_or(false) {
+        s.edms.refresh_sidecar(document, &path).map_err(edms_error)?;
+    }
+    let with_data = p::bool(v, "data").unwrap_or(false);
+    Ok(match s.edms.sidecar(document, &path).map_err(edms_error)? {
+        Lookup::Pending => json!({"document": document, "path": path, "state": "pending"}),
+        Lookup::Failed(error) => json!({"document": document, "path": path, "state": "failed", "error": error_json(error)}),
+        Lookup::Ready(file) => {
+            let mut value = json!({"document": document, "path": path, "state": "ready", "size": file.bytes.len(), "etag": file.etag, "contentType": file.content_type});
+            if with_data {
+                if file.bytes.len() > crate::edms::MAX_FETCH_BYTES {
+                    return Err(CmdError::Failed(format!("{path} is too big to hand over ({} bytes)", file.bytes.len())));
+                }
+                value["data"] = json!(super::insert::base64_encode(&file.bytes));
+            }
+            value
+        }
+    })
+}
+
+fn run_with(s: &mut Session, v: &Value) -> CmdResult {
+    let command = require(v, "command")?;
+    let path = require(v, "path")?;
+    let params = v.get("params").cloned().unwrap_or_else(|| json!({}));
+    s.run_with_sidecar(&command, &params, &path, p::str(v, "as").unwrap_or("data"))
+}
+
 fn adopt(s: &mut Session, v: &Value) -> CmdResult {
     let (drive_id, path) = drive_and_path(v)?;
     let mut location = Location::new(&drive_id, &path);
@@ -209,7 +267,21 @@ fn copy_bytes(s: &Session, name: &str) -> Result<Vec<u8>, CmdError> {
     crate::io::save_bytes_opts(name, copy.as_ref().unwrap_or(&s.doc), &opts).map_err(CmdError::Failed)
 }
 
-fn save(s: &mut Session, _v: &Value) -> CmdResult {
+/// What the collaboration still owes this document (SIGNAL.md, Nachlieferliste), for a message.
+fn incomplete(s: &Session) -> Vec<Value> {
+    s.signal.outstanding().iter().map(|o| json!({"command": o.command, "key": o.key, "size": o.size, "seq": o.seq})).collect()
+}
+
+fn save(s: &mut Session, v: &Value) -> CmdResult {
+    // In sync or not at all: with content still on its way, saving needs a second yes.
+    let missing = incomplete(s);
+    if !missing.is_empty() && !p::bool(v, "incomplete").unwrap_or(false) {
+        s.push_ui_request(json!({"edms": {"event": "saveIncomplete", "missing": missing}}));
+        return Err(CmdError::Disabled(format!(
+            "{} of the collaboration is still on its way (only its preview is here): save with \"incomplete\": true to keep the preview",
+            if missing.len() == 1 { "1 item".to_string() } else { format!("{} items", missing.len()) }
+        )));
+    }
     let id = s.document_id();
     let (location, name) = {
         let doc = s.edms.document(id).ok_or_else(|| CmdError::Disabled("not opened from the EDMS".into()))?;
@@ -236,7 +308,14 @@ fn save_as(s: &mut Session, v: &Value) -> CmdResult {
     let (location, name, overwrite) = target(v)?;
     let switch = p::bool(v, "switch").unwrap_or(true);
     let bytes = if switch { document_bytes(s, &name)? } else { copy_bytes(s, &name)? };
-    pending(s, Request::PutNew { location, bytes, overwrite }, Action::SaveAs { name, switch })
+    let mut answer = pending(s, Request::PutNew { location, bytes, overwrite }, Action::SaveAs { name, switch })?;
+    // A copy out of a collaboration holds what is here now, and says what is not.
+    let missing = incomplete(s);
+    if !missing.is_empty() {
+        s.push_ui_request(json!({"edms": {"event": "savedIncomplete", "missing": missing}}));
+        answer["incomplete"] = json!(missing);
+    }
+    Ok(answer)
 }
 
 fn export(s: &mut Session, v: &Value) -> CmdResult {

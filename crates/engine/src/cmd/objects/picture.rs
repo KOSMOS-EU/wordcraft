@@ -157,7 +157,7 @@ pub fn fit_size(w: f32, h: f32, keep: bool) -> (f32, f32) {
 }
 
 /// Apply an image operation to the selected picture's bitmap (stored as a new PNG).
-pub(super) fn adjust(s: &mut Session, f: impl Fn(image::DynamicImage) -> Result<image::DynamicImage, CmdError>) -> CmdResult {
+pub(super) fn adjust(s: &mut Session, f: impl Fn(image::DynamicImage) -> Result<image::DynamicImage, CmdError> + 'static) -> CmdResult {
     let (_, o) = selected(s).ok_or_else(|| CmdError::Disabled("no picture".into()))?;
     let InlineObject::Image { media, .. } = o else { return Err(CmdError::Disabled("not a picture".into())) };
     adjust_media(s, &media, |_| {}, f)
@@ -185,7 +185,7 @@ pub(super) fn adjust_media(
     s: &mut Session,
     base: &str,
     fx: impl Fn(&mut PicFx),
-    f: impl Fn(image::DynamicImage) -> Result<image::DynamicImage, CmdError>,
+    f: impl Fn(image::DynamicImage) -> Result<image::DynamicImage, CmdError> + 'static,
 ) -> CmdResult {
     let bytes = s.doc.media.get(base).cloned().ok_or_else(|| CmdError::Failed("picture data missing".into()))?;
     // Within the budget pictures are drawn within, checked from the header first (#3644, #3647).
@@ -196,7 +196,17 @@ pub(super) fn adjust_media(
     let out = f(img)?;
     let mut png = Vec::new();
     out.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| CmdError::Failed(e.to_string()))?;
+    // kosmos: `base` stands in for a picture that is still on its way in a collaboration. What
+    // is made of it is its picture's alone (not shared with what the same edit makes of another
+    // frame), and the edit is made again on the picture when it arrives.
+    let standing_in = s.signal.stands_in(base, &bytes);
+    if standing_in {
+        crate::signal_frame::png_comment(&mut png, &craft_signal::blobs::hash_of(&bytes));
+    }
     let key = s.doc.add_media(png, "png");
+    if standing_in && let Some(made) = s.doc.media.get(&key).cloned() {
+        s.signal.note_derived(base, bytes.clone(), &key, made, Box::new(f));
+    }
     // Chain onto the ultimate original (the base's, or the current picture's when the base
     // is itself derived), so Reset Picture always finds it.
     let cur = selected(s).and_then(|(_, o)| match o {

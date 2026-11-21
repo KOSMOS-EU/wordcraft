@@ -2,6 +2,24 @@ use super::doc_state::{MAX_UNDO, Selection, UNDO_LIST_MAX, Undo, next_math_sessi
 use super::{Arc, Document, Session};
 
 impl Session {
+    /// Put `content` in the place of the media entry `key` wherever it still holds `stand_in`:
+    /// in the document and in every undo and redo step, so that no step brings the stand-in
+    /// back. The document does not become dirty by it. Returns in how many documents it was replaced.
+    pub(crate) fn replace_media(&mut self, key: &str, stand_in: &[u8], content: &Arc<Vec<u8>>) -> usize {
+        let mut replaced = usize::from(replace_media_in(&mut self.doc, key, stand_in, content));
+        for step in self.history.iter_mut().chain(self.redo.iter_mut()) {
+            if step.doc.media.get(key).is_some_and(|bytes| bytes.as_slice() == stand_in) {
+                replaced += usize::from(replace_media_in(&mut Arc::make_mut(step).doc, key, stand_in, content));
+            }
+        }
+        if replaced > 0 {
+            // Not an edit of its own (the command that brought the stand-in was): only the
+            // view has to draw again.
+            self.rev = self.rev.wrapping_add(1);
+        }
+        replaced
+    }
+
     /// Snapshot for undo before a change. Returns whether it took a step: typing that is
     /// already in an open step is not a new one.
     pub fn checkpoint(&mut self, label: &str) -> bool {
@@ -254,5 +272,16 @@ impl Session {
     /// would let a restore put the previous document's content into this one (#1327 follow-up).
     pub fn clear_versions(&mut self) {
         self.versions.clear();
+    }
+}
+
+/// Replace the media entry `key` of `doc` by `content` if it holds `stand_in`.
+pub(crate) fn replace_media_in(doc: &mut Document, key: &str, stand_in: &[u8], content: &Arc<Vec<u8>>) -> bool {
+    match doc.media.get_mut(key) {
+        Some(bytes) if bytes.as_slice() == stand_in => {
+            *bytes = content.clone();
+            true
+        }
+        _ => false,
     }
 }

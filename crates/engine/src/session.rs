@@ -16,6 +16,7 @@ pub use documents::{DocInfo, DocState};
 use documents::{document_id_mark, next_document_id, untitled_name};
 pub use views::WindowView;
 mod history;
+pub(crate) use history::replace_media_in;
 mod ime;
 mod layout;
 mod lifecycle;

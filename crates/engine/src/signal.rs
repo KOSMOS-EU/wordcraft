@@ -21,12 +21,16 @@
 //! step). Undo stays local.
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
 
+use craft_signal::blobs::MAX_PREVIEW_BYTES;
+use craft_signal::frame::MAX_CONTROL_PAYLOAD;
 use craft_signal::wire::Mode;
-use craft_signal::{ConnectRequest, Incoming, OpPayload, Port, SignalError};
+use craft_signal::{Attachment, ConnectRequest, Hash, Incoming, OpPayload, Outstanding, Port, PreviewKind, SignalError};
 use serde_json::{Value, json};
 use wordcraft_doc::{Document, Path, StoryRef};
 
+use crate::signal_frame::{self, FrameFormat};
 use crate::snapshot::EditSnapshot;
 use crate::{CmdError, Selection, Session};
 
@@ -36,6 +40,10 @@ pub const MAX_LOG: usize = 64;
 pub const MAX_TRACES: usize = 1024;
 /// The reason the client gives a proposal that a master change returned.
 const MASTER_CHANGED: &str = "master changed";
+
+/// A text parameter at least this long leaves a command that doesn't fit the control channel
+/// and travels as a blob on the bulk channel (SIGNAL.md, "Vorschau vor Bestätigung").
+const MIN_DETACHED_BYTES: usize = 256;
 
 /// The paragraphs a command's anchor names: from the first to the last of its selection, in one
 /// story. `None` when the anchor is missing or spans stories.
@@ -71,6 +79,37 @@ enum Journal {
     Remote { seq: u32, op: OpPayload },
 }
 
+/// An empty picture standing in the document for content that is still on its way.
+struct Frame {
+    /// The blob it stands for (the picture as the command carries it: base64).
+    hash: Hash,
+    /// Where it is in the document's media.
+    media: String,
+    /// Its bytes, to tell it from what may have taken that name since.
+    stand_in: Arc<Vec<u8>>,
+}
+
+/// A change of a picture's pixels (Picture Format), kept to be made again on the picture itself.
+pub(crate) type PictureEdit = Box<dyn Fn(image::DynamicImage) -> Result<image::DynamicImage, CmdError>>;
+
+/// A picture made from a frame by Picture Format, here or by another participant who already
+/// had the picture: when the picture arrives, the same change is made to it.
+struct Derived {
+    /// The media it was made from (a frame, or another derived picture) and its bytes then.
+    base: String,
+    base_bytes: Arc<Vec<u8>>,
+    /// The media it is and its bytes now.
+    media: String,
+    bytes: Arc<Vec<u8>>,
+    edit: PictureEdit,
+}
+
+/// A frame `attached` put into a command's parameters, before the command ran.
+struct FramedParameter {
+    hash: Hash,
+    stand_in: Vec<u8>,
+}
+
 /// The collaboration state of a session.
 #[derive(Default)]
 pub struct SignalState {
@@ -83,6 +122,10 @@ pub struct SignalState {
     traces: VecDeque<CommitTrace>,
     /// The collaborator's journal since its oldest unconfirmed proposal.
     journal: Vec<Journal>,
+    /// The frames in the document whose pictures are still on their way.
+    frames: Vec<Frame>,
+    /// What Picture Format made of those frames.
+    derived: Vec<Derived>,
     /// Proposals a master change sent again; their `NAK`s are expected and not errors.
     resent_locals: HashSet<u32>,
     pub applied: u64,
@@ -125,6 +168,110 @@ impl SignalState {
         self.port.as_ref().is_some_and(|p| p.joined() && p.mode() == Mode::Edit && !p.is_master())
     }
 
+    /// The delivery list of the collaboration: what is valid here but not complete yet (a
+    /// picture shown as its preview). Empty outside a session.
+    pub fn outstanding(&self) -> Vec<Outstanding> {
+        self.port.as_ref().filter(|port| port.joined()).map(|port| port.outstanding()).unwrap_or_default()
+    }
+
+    /// Whether the media `key` with `bytes` is a frame, or was made from one: its picture is
+    /// still on its way.
+    pub(crate) fn stands_in(&self, key: &str, bytes: &[u8]) -> bool {
+        self.frames.iter().any(|frame| frame.media == key && frame.stand_in.as_slice() == bytes)
+            || self.derived.iter().any(|derived| derived.media == key && derived.bytes.as_slice() == bytes)
+    }
+
+    /// Picture Format made `media` from `base` while `base` stood in for a picture.
+    pub(crate) fn note_derived(&mut self, base: &str, base_bytes: Arc<Vec<u8>>, media: &str, bytes: Arc<Vec<u8>>, edit: PictureEdit) {
+        self.derived.push(Derived { base: base.to_string(), base_bytes, media: media.to_string(), bytes, edit });
+    }
+
+    /// How many pictures in the document are shown as their frame.
+    pub fn framed(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Move what makes `op` too big for the control channel out of its parameters: each long
+    /// text parameter (a picture's base64, pasted text) becomes a blob offered on the bulk
+    /// channel and an attachment naming it. What fits a preview is its own preview. A bigger
+    /// picture goes with its pixel size and format, so the others show a frame until it is
+    /// there ([`signal_frame`]); anything else that big has to be at the master whole before
+    /// the command counts. A reduced preview of a big picture is not built yet.
+    fn detach(&mut self, op: &mut OpPayload) -> Result<(), SignalError> {
+        let fits = |op: &OpPayload| craft_signal::wire::encode(op).map(|payload| payload.len() <= MAX_CONTROL_PAYLOAD);
+        if fits(op)? {
+            return Ok(());
+        }
+        let Some(port) = self.port.as_mut() else { return Ok(()) };
+        let Some(params) = op.params.as_object_mut() else { return Ok(()) };
+        let long: Vec<String> = params
+            .iter()
+            .filter(|(_, value)| value.as_str().is_some_and(|text| text.len() >= MIN_DETACHED_BYTES))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in long {
+            let Some(Value::String(text)) = params.remove(&key) else { continue };
+            let framed =
+                if text.len() > MAX_PREVIEW_BYTES && op.command == "insert.picture" && key == "data" { signal_frame::describe(&text) } else { None };
+            let bytes = text.into_bytes();
+            let attachment = match framed {
+                _ if bytes.len() <= MAX_PREVIEW_BYTES => Attachment::original(&key, &bytes),
+                Some((format, pixels)) => {
+                    let mut attachment = Attachment::generic(&key, &bytes, pixels);
+                    attachment.preview_type = format.mime().to_string();
+                    attachment
+                }
+                None => Attachment::whole(&key, &bytes),
+            };
+            port.offer(bytes)?;
+            op.attachments.push(attachment);
+        }
+        Ok(())
+    }
+
+    /// The parameters of `op` with its attachments back in them: the blob the command is valid
+    /// with (the content itself, or its preview while the content is on its way). A picture
+    /// that is only announced by its size gets a frame; those come back with the parameters.
+    /// A picture `doc` already holds is taken from there, as the one who brought it in did.
+    fn attached(&self, op: &OpPayload, doc: &Document) -> Result<(Value, Vec<FramedParameter>), String> {
+        let mut framed = Vec::new();
+        if op.attachments.is_empty() {
+            return Ok((op.params.clone(), framed));
+        }
+        let port = self.port.as_ref().ok_or_else(|| "no Craft Signal transport".to_string())?;
+        let mut params = if op.params.is_object() { op.params.clone() } else { json!({}) };
+        for attachment in &op.attachments {
+            let bytes = match port.blob(&attachment.hash) {
+                Some(bytes) => bytes,
+                None => match attachment.required() {
+                    Ok(Some(preview)) => port.blob(&preview).ok_or_else(|| format!("the preview of `{}` is not here", attachment.key))?,
+                    Ok(None) => {
+                        if let Some(held) = held_picture(doc, attachment) {
+                            params[attachment.key.as_str()] = json!(held);
+                            continue;
+                        }
+                        let format = FrameFormat::from_mime(&attachment.preview_type)
+                            .filter(|_| attachment.kind() == PreviewKind::Generic && op.command == "insert.picture")
+                            .ok_or_else(|| {
+                                format!(
+                                    "`{}` has no preview that could be shown (a box of {}×{})",
+                                    attachment.key, attachment.width, attachment.height
+                                )
+                            })?;
+                        let stand_in = signal_frame::build(format, (attachment.width, attachment.height), &attachment.hash)?;
+                        params[attachment.key.as_str()] = json!(crate::cmd::insert::base64_encode(&stand_in));
+                        framed.push(FramedParameter { hash: attachment.hash, stand_in });
+                        continue;
+                    }
+                    Err(reason) => return Err(reason),
+                },
+            };
+            let text = std::str::from_utf8(bytes).map_err(|_| format!("the content of `{}` is not text", attachment.key))?;
+            params[attachment.key.as_str()] = json!(text);
+        }
+        Ok((params, framed))
+    }
+
     pub fn port_mut(&mut self) -> Result<&mut (dyn Port + '_), CmdError> {
         match self.port.as_deref_mut() {
             Some(port) => Ok(port),
@@ -143,6 +290,7 @@ impl SignalState {
         status["resent"] = json!(self.resent);
         status["journal"] = json!(self.journal.len());
         status["traces"] = json!(self.traces.len());
+        status["framed"] = json!(self.framed());
         status
     }
 
@@ -285,9 +433,15 @@ impl Session {
             m.remove("password");
         }
         let anchor = serde_json::to_value(sel_before).unwrap_or(Value::Null);
-        let op = OpPayload { command: id.to_string(), params, anchor: anchor.clone(), time: 0, author: 0 };
+        let mut op = OpPayload { command: id.to_string(), params, anchor: anchor.clone(), time: 0, author: 0, attachments: Vec::new() };
         let master = port.is_master();
         let me = port.id();
+        if let Err(e) = self.signal.detach(&mut op) {
+            let message = format!("{id}: {e}");
+            self.signal.note(json!({"event": "error", "message": message}));
+            self.push_ui_request(json!({"signal": {"event": "error", "message": message}}));
+            return;
+        }
         let structural = master && before_doc.is_some_and(|before| paragraphs(before, &anchor) != paragraphs(&self.doc, &anchor));
         let Some(port) = self.signal.port.as_mut() else { return };
         match port.propose(op.clone()) {
@@ -311,7 +465,11 @@ impl Session {
     /// frame, `signal.poll` on demand.
     pub fn signal_pump(&mut self) {
         let incoming = match self.signal.port.as_mut() {
-            Some(port) => port.poll(),
+            Some(port) => {
+                // The client has no clock: with the time it gives up on a preview that never comes.
+                port.set_time(now_ms());
+                port.poll()
+            }
             None => return,
         };
         for item in incoming {
@@ -437,7 +595,16 @@ impl Session {
             Incoming::Saved { seq } => {
                 self.signal.note(json!({"event": "saved", "seq": seq}));
             }
+            Incoming::BlobComplete { hash } => {
+                // The content behind a frame arrived: it takes the frame's place.
+                let replaced = self.signal_fill_frames(&hash);
+                let entry = json!({"event": "blobComplete", "hash": craft_signal::blobs::hex(&hash), "replaced": replaced});
+                self.signal.note(entry.clone());
+                self.push_ui_request(json!({"signal": entry}));
+            }
             Incoming::Closed { reason } => {
+                self.signal.frames.clear();
+                self.signal.derived.clear();
                 self.signal.journal.clear();
                 self.signal.traces.clear();
                 let entry = json!({"event": "closed", "reason": reason});
@@ -458,6 +625,7 @@ impl Session {
         if !transmits(&op.command) {
             return Err(format!("{} is not a collaboration command", op.command));
         }
+        let (params, framed) = self.signal.attached(op, &self.doc)?;
         let mine = self.sel.clone();
         let theirs: Option<Selection> = serde_json::from_value(op.anchor.clone()).ok();
         self.signal.applying = true;
@@ -465,11 +633,96 @@ impl Session {
             self.sel = sel;
             self.clamp_selection();
         }
-        let result = self.run(&op.command, &op.params);
+        let result = self.run(&op.command, &params);
         self.signal.applying = false;
         self.sel = mine;
         self.clamp_selection();
+        if result.is_ok() {
+            self.signal_note_frames(framed);
+        }
         result.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// Remember where the frames a command just put in ended up in the document's media.
+    fn signal_note_frames(&mut self, framed: Vec<FramedParameter>) {
+        for FramedParameter { hash, stand_in } in framed {
+            let Some((media, bytes)) = self.doc.media.iter().find(|(_, bytes)| bytes.as_slice() == stand_in.as_slice()) else { continue };
+            if self.signal.frames.iter().any(|frame| frame.hash == hash && frame.media == *media) {
+                continue;
+            }
+            let entry = json!({"event": "framed", "media": media, "hash": craft_signal::blobs::hex(&hash)});
+            self.signal.frames.push(Frame { hash, media: media.clone(), stand_in: bytes.clone() });
+            self.signal.note(entry.clone());
+            self.push_ui_request(json!({"signal": entry}));
+        }
+    }
+
+    /// [`Session::replace_media`], and the same in the snapshots the journal would restore.
+    fn signal_replace_media(&mut self, key: &str, stand_in: &[u8], content: &Arc<Vec<u8>>) -> usize {
+        let mut replaced = self.replace_media(key, stand_in, content);
+        for entry in &mut self.signal.journal {
+            if let Journal::Own { before: Some(snapshot), .. } = entry {
+                replaced += snapshot.replace_media(key, stand_in, content);
+            }
+        }
+        replaced
+    }
+
+    /// `media` got its picture (`content` where `stand_in` was): make the Picture Format changes
+    /// that were made to the stand-in again on the picture, and so on down the chain.
+    fn signal_redo_derived(&mut self, media: &str, stand_in: Arc<Vec<u8>>, content: Arc<Vec<u8>>) {
+        let mut arrived = vec![(media.to_string(), stand_in, content)];
+        while let Some((base, base_before, base_now)) = arrived.pop() {
+            let (waiting, rest): (Vec<Derived>, Vec<Derived>) =
+                std::mem::take(&mut self.signal.derived).into_iter().partition(|derived| derived.base == base && *derived.base_bytes == *base_before);
+            self.signal.derived = rest;
+            for derived in waiting {
+                let made = wordcraft_geom::picture::decode(&base_now, wordcraft_geom::MAX_DECODED_BYTES)
+                    .map_err(|e| e.to_string())
+                    .and_then(|picture| (derived.edit)(picture).map_err(|e| e.to_string()))
+                    .and_then(|picture| {
+                        let mut png = Vec::new();
+                        picture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+                        Ok(Arc::new(png))
+                    });
+                match made {
+                    Ok(png) => {
+                        self.signal_replace_media(&derived.media, &derived.bytes, &png);
+                        arrived.push((derived.media, derived.bytes, png));
+                    }
+                    Err(e) => self.signal.note(json!({"event": "error", "message": format!("a change to a picture could not be made again on the picture that arrived: {e}")})),
+                }
+            }
+        }
+    }
+
+    /// The picture `hash` is complete here: put it where its frames are, in the document, in
+    /// the undo and redo steps and in the journal's snapshots. Returns how many frames it filled.
+    fn signal_fill_frames(&mut self, hash: &Hash) -> usize {
+        let (waiting, rest): (Vec<Frame>, Vec<Frame>) = std::mem::take(&mut self.signal.frames).into_iter().partition(|frame| frame.hash == *hash);
+        self.signal.frames = rest;
+        if waiting.is_empty() {
+            return 0;
+        }
+        let content = self
+            .signal
+            .port
+            .as_ref()
+            .and_then(|port| port.blob(hash))
+            .and_then(|base64| std::str::from_utf8(base64).ok())
+            .and_then(crate::cmd::insert::base64_decode)
+            .map(Arc::new);
+        let Some(content) = content else {
+            self.signal.note(json!({"event": "error", "message": "a picture arrived that can't be read; its frame stays"}));
+            return 0;
+        };
+        let mut filled = 0usize;
+        for frame in &waiting {
+            let replaced = self.signal_replace_media(&frame.media, &frame.stand_in, &content);
+            self.signal_redo_derived(&frame.media, frame.stand_in.clone(), content.clone());
+            filled += usize::from(replaced > 0);
+        }
+        filled
     }
 
     /// Take a rejected own proposal back: restore the snapshot from before it and replay the
@@ -559,7 +812,15 @@ impl Session {
                 self.sel = sel;
                 self.clamp_selection();
             }
-            match self.run(&op.command, &op.params) {
+            // The proposal lost what went out as a blob; it is still here.
+            let params = match self.signal.attached(&op, &self.doc) {
+                Ok((params, _)) => params,
+                Err(e) => {
+                    self.signal.note(json!({"event": "resendFailed", "local": local, "command": op.command, "error": e}));
+                    continue;
+                }
+            };
+            match self.run(&op.command, &params) {
                 Ok(_) => resent += 1,
                 Err(e) => self.signal.note(json!({"event": "resendFailed", "local": local, "command": op.command, "error": e.to_string()})),
             }
@@ -569,6 +830,15 @@ impl Session {
         self.signal.resent += resent as u64;
         resent
     }
+}
+
+/// The picture `attachment` names, as the command carries it (base64), if `doc` holds it already.
+fn held_picture(doc: &Document, attachment: &Attachment) -> Option<String> {
+    doc.media
+        .values()
+        .filter(|bytes| (bytes.len().div_ceil(3) as u64).saturating_mul(4) == attachment.size)
+        .map(|bytes| crate::cmd::insert::base64_encode(bytes))
+        .find(|base64| craft_signal::blobs::hash_of(base64.as_bytes()) == attachment.hash)
 }
 
 fn signal_error(e: SignalError) -> CmdError {

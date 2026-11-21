@@ -78,3 +78,16 @@ pub(super) type LayoutEntry = (
 /// The layouts last made, newest first. Two, so two windows on one document with different
 /// views ([`WindowView`]) each find theirs as they draw in turn.
 pub(super) type LayoutSlots = [Option<LayoutEntry>; 2];
+
+impl EditSnapshot {
+    /// [`Session::replace_media`] for what this snapshot would restore.
+    pub(crate) fn replace_media(&mut self, key: &str, stand_in: &[u8], content: &Arc<Vec<u8>>) -> usize {
+        let mut replaced = usize::from(crate::session::replace_media_in(&mut self.doc, key, stand_in, content));
+        for step in self.head.iter_mut().chain(self.redo.iter_mut()) {
+            if step.doc.media.get(key).is_some_and(|bytes| bytes.as_slice() == stand_in) {
+                replaced += usize::from(crate::session::replace_media_in(&mut Arc::make_mut(step).doc, key, stand_in, content));
+            }
+        }
+        replaced
+    }
+}

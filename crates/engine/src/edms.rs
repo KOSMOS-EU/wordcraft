@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use craft_edms::change::{Advice, State, Tracker};
-use craft_edms::{EdmsError, Location, Outcome, Port, Reply, Request, RequestId};
+use craft_edms::{EdmsError, Location, Lookup, Outcome, Port, Reply, Request, RequestId, Sidecars, WorkDir};
 use serde_json::{Value, json};
 
 use crate::{CmdError, Session};
@@ -55,6 +55,22 @@ pub enum Action {
     },
 }
 
+/// Most commands kept waiting for a file beside their document.
+pub const MAX_DEFERRED: usize = 16;
+
+/// A command waiting for a file beside its document (`edms.runWith`): it has not run yet, and
+/// runs once, with the file's bytes in its parameters, when the fetch is over.
+#[derive(Clone, Debug, PartialEq)]
+struct Deferred {
+    document: u64,
+    command: String,
+    params: Value,
+    /// The path of the file, relative to the document.
+    path: String,
+    /// The parameter that takes the bytes, as base64.
+    key: String,
+}
+
 /// Where a document lives and how it relates to the server's version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdmsDocument {
@@ -94,6 +110,9 @@ pub struct EdmsState {
     documents: HashMap<u64, EdmsDocument>,
     actions: Vec<(RequestId, Action)>,
     results: Vec<Value>,
+    /// The files beside each document (linked pictures, data sources), fetched on demand.
+    sidecars: Sidecars,
+    deferred: Vec<Deferred>,
 }
 
 impl EdmsState {
@@ -147,6 +166,47 @@ impl EdmsState {
 
     pub fn document_mut(&mut self, id: u64) -> Option<&mut EdmsDocument> {
         self.documents.get_mut(&id)
+    }
+
+    /// The working directory of session document `id`: the folder it lives in. A document that
+    /// was never saved to the EDMS has none.
+    pub fn work_dir(&self, id: u64) -> Result<WorkDir, EdmsError> {
+        WorkDir::of(self.documents.get(&id).map(|d| &d.location))
+    }
+
+    /// The file `relative` beside session document `id`: there, on its way, or failed. The
+    /// first call starts the fetch; the front end hears `{"edms": {"event": "sidecar"}}` when
+    /// something arrived for the document and asks again. Never blocks.
+    pub fn sidecar(&mut self, id: u64, relative: &str) -> Result<Lookup<'_>, EdmsError> {
+        let port = self.port.as_deref_mut().ok_or(EdmsError::NotConnected)?;
+        self.sidecars.lookup(port, id, self.documents.get(&id).map(|d| &d.location), relative)
+    }
+
+    /// Forget a sidecar so the next [`sidecar`](Self::sidecar) fetches it again.
+    pub fn refresh_sidecar(&mut self, id: u64, relative: &str) -> Result<(), EdmsError> {
+        self.sidecars.refresh(id, self.documents.get(&id).map(|d| &d.location), relative)
+    }
+
+    /// A session document was closed or replaced: its sidecars go.
+    pub fn forget_sidecars(&mut self, id: u64) {
+        self.sidecars.forget_document(id);
+        self.deferred.retain(|waiting| waiting.document != id);
+    }
+
+    /// Commands waiting for a file beside their document.
+    pub fn deferred(&self) -> usize {
+        self.deferred.len()
+    }
+
+    fn defer(&mut self, waiting: Deferred) {
+        if self.deferred.len() >= MAX_DEFERRED {
+            self.deferred.remove(0);
+        }
+        self.deferred.push(waiting);
+    }
+
+    pub fn sidecar_bytes(&self) -> usize {
+        self.sidecars.held_bytes()
     }
 
     /// Submit a request and remember what to do with its answer.
@@ -264,7 +324,100 @@ impl Session {
             None => return,
         };
         for outcome in outcomes {
-            self.apply_edms_outcome(outcome);
+            // A sidecar's answer fills the cache and says so; everything else is a command's.
+            match self.edms.sidecars.absorb(outcome) {
+                Ok(document) => self.push_ui_request(json!({"edms": {"event": "sidecar", "document": document}})),
+                Err(outcome) => self.apply_edms_outcome(outcome),
+            }
+        }
+        if !self.edms.deferred.is_empty() {
+            self.run_deferred();
+        }
+    }
+
+    /// Run `command` once with the file `path` beside the active document in its parameter
+    /// `key` (base64, as a front end hands over a file the user picked). The file is fetched
+    /// first; the command runs when it is there, so it runs once and carries the bytes itself.
+    /// Nothing runs if the fetch fails.
+    pub(crate) fn run_with_sidecar(&mut self, command: &str, params: &Value, path: &str, key: &str) -> Result<Value, CmdError> {
+        if command == "edms.runWith" || self.registry.get(command).is_none() {
+            return Err(CmdError::Unknown(command.to_string()));
+        }
+        if !(params.is_object() || params.is_null()) {
+            return Err(CmdError::Params("`params` must be an object".into()));
+        }
+        let document = self.document_id();
+        let waiting = Deferred { document, command: command.to_string(), params: params.clone(), path: path.to_string(), key: key.to_string() };
+        match self.sidecar_parameters(&waiting)? {
+            Some(ready) => Ok(json!({"ran": true, "result": self.run(command, &ready)?})),
+            None => {
+                self.edms.defer(waiting);
+                Ok(json!({"pending": "sidecar", "path": path, "document": document}))
+            }
+        }
+    }
+
+    /// The parameters of a waiting command with its file in them; `None` while the file is on
+    /// its way (the first call starts the fetch).
+    fn sidecar_parameters(&mut self, waiting: &Deferred) -> Result<Option<Value>, CmdError> {
+        let lookup = self.edms.sidecar(waiting.document, &waiting.path).map_err(|error| match error {
+            EdmsError::NotConnected => CmdError::Disabled(error.to_string()),
+            EdmsError::Params(p) => CmdError::Params(p),
+            other => CmdError::Failed(other.to_string()),
+        })?;
+        match lookup {
+            Lookup::Pending => Ok(None),
+            Lookup::Ready(file) if file.bytes.len() > MAX_FETCH_BYTES => {
+                Err(CmdError::Failed(format!("{} is too big to hand over ({} bytes)", waiting.path, file.bytes.len())))
+            }
+            Lookup::Ready(file) => {
+                let mut params = waiting.params.clone();
+                params[waiting.key.as_str()] = json!(crate::cmd::insert::base64_encode(&file.bytes));
+                Ok(Some(params))
+            }
+            Lookup::Failed(error) => {
+                let message = format!("{}: {error}", waiting.path);
+                // The failure is reported once; the next try fetches again.
+                let _ = self.edms.refresh_sidecar(waiting.document, &waiting.path);
+                Err(CmdError::Failed(message))
+            }
+        }
+    }
+
+    /// Run the commands of the active document whose file has arrived (or failed). A command of
+    /// a document in the background waits until that document is active again.
+    fn run_deferred(&mut self) {
+        let active = self.document_id();
+        let mut waiting = std::mem::take(&mut self.edms.deferred);
+        let mut due = Vec::new();
+        waiting.retain(|deferred| {
+            let place = self.edms.documents.get(&deferred.document).map(|d| &d.location);
+            let pending = matches!(self.edms.sidecars.peek(deferred.document, place, &deferred.path), Ok(Some(Lookup::Pending)));
+            let run_now = deferred.document == active && !pending;
+            if run_now {
+                due.push(deferred.clone());
+            }
+            !run_now
+        });
+        self.edms.deferred = waiting;
+        for deferred in due {
+            let result = match self.sidecar_parameters(&deferred) {
+                // Dropped from the cache in between: fetched again, the command keeps waiting.
+                Ok(None) => {
+                    self.edms.defer(deferred);
+                    continue;
+                }
+                Ok(Some(params)) => self.run(&deferred.command, &params),
+                Err(error) => Err(error),
+            };
+            let report = match result {
+                Ok(_) => json!({"kind": "deferred", "ok": true, "command": deferred.command, "path": deferred.path, "document": deferred.document}),
+                Err(error) => {
+                    self.push_ui_request(json!({"edms": {"event": "sidecarFailed", "command": deferred.command, "path": deferred.path, "document": deferred.document, "message": error.to_string()}}));
+                    json!({"kind": "deferred", "ok": false, "command": deferred.command, "path": deferred.path, "document": deferred.document, "error": {"code": "apply", "message": error.to_string()}})
+                }
+            };
+            self.edms.push_result(report);
         }
     }
 
@@ -402,6 +555,9 @@ impl Session {
         let old_id = self.document_id();
         let in_place = reload || self.used_because().is_none();
         let previous = if in_place { self.edms.documents.remove(&old_id) } else { None };
+        if in_place {
+            self.edms.forget_sidecars(old_id);
+        }
         if in_place {
             self.set_document(doc);
         } else {

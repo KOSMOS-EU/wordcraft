@@ -532,6 +532,7 @@ impl Session {
     /// active document; what a window does then is the front end's choice. An id that isn't
     /// open is an error.
     pub fn close_document(&mut self, id: u64) -> Result<(), CmdError> {
+        self.edms.forget_sidecars(id);
         if id != self.document_id {
             if !self.remove_parked(id) {
                 return Err(unknown(id));

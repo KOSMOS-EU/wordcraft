@@ -553,6 +553,11 @@ impl WordApp {
             "closed" => {
                 crate::i18n::fmt(tl!("Collaboration ended: {reason}"), &[("reason", signal.get("reason").and_then(Value::as_str).unwrap_or(""))])
             }
+            // A big picture counts at once; until its bytes are here it is shown as a frame.
+            "framed" => tl!("Collaboration: a picture is still on its way, its frame holds the place").to_string(),
+            "blobComplete" if signal.get("replaced").and_then(Value::as_u64).unwrap_or(0) > 0 => {
+                tl!("Collaboration: the picture arrived").to_string()
+            }
             "error" | "applyFailed" => crate::i18n::fmt(
                 tl!("Collaboration error: {message}"),
                 &[("message", signal.get("message").or_else(|| signal.get("error")).and_then(Value::as_str).unwrap_or(""))],
