@@ -456,6 +456,10 @@ impl Session {
 
     fn edms_failed(&mut self, id: RequestId, kind: &str, action: &Action, error: &EdmsError) -> Value {
         let mut value = json!({"id": id, "kind": action_name(action, kind), "ok": false, "error": error_json(error)});
+        // kosmos: a save the master ran for a participant failed: that participant hears why.
+        if matches!(action, Action::Save) {
+            self.signal.save_failed(&error.to_string());
+        }
         // A rejected save says the server has a newer version: the tracker decides what to offer.
         if *error == EdmsError::Conflict
             && matches!(action, Action::Save)
@@ -608,9 +612,12 @@ impl Session {
             doc.location.item_id = file_id.clone();
         }
         doc.tracker.saved(doc.location.etag.as_deref());
+        let held = doc.location.etag.clone();
         self.dirty = false;
         self.relayout();
         self.push_ui_request(json!({"edms": {"event": "saved", "document": id}}));
+        // kosmos: as the master of a collaboration, tell the others which version holds the state.
+        self.signal.save_finished(held.as_deref());
         Ok(json!({"saved": true, "etag": etag, "fileId": file_id}))
     }
 

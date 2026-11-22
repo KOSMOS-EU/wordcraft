@@ -974,3 +974,155 @@ fn joining_by_itself_can_be_switched_off_and_needs_a_document_from_the_edms() {
     let refused = local.run("signal.join", &json!({})).unwrap_err().to_string();
     assert!(refused.contains("EDMS"), "{refused}");
 }
+
+/// A document opened from the EDMS, in a session as participant `id` (master `master`), joined and
+/// up to date, without the automatic join getting in the way. The EDMS transport comes back too.
+fn in_session_from_the_edms(id: u16, master: u16) -> (Session, RecordingTransport, craft_edms::RecordingTransport) {
+    use craft_edms::{Client as EdmsClient, HttpResponse, RecordingTransport as EdmsTransport};
+    let (mut s, transport) = session();
+    let edms = EdmsTransport::default();
+    s.edms.install(Box::new(EdmsClient::new(edms.clone())));
+    s.run("signal.auto", &json!({"value": false})).unwrap();
+    s.run("edms.connect", &json!({"origin": "https://cloud.xwork.cloud", "token": "tok", "initiatorId": "client-1"})).unwrap();
+    let opening = s.run("edms.open", &json!({"drive": "d1", "path": "/Bericht.docx"})).unwrap()["pending"].as_u64().unwrap();
+    let docx = crate::io::save_bytes("Bericht.docx", &crate::blank_document(&wordcraft_geom::Region::default())).unwrap();
+    edms.answer(opening, HttpResponse::new(200).with_header("ETag", "\"e1\"").with_header("OC-FileId", "storage$space!item").with_body(docx));
+    s.edms_pump();
+    // The stat that follows an open.
+    if let Some((stat, _)) = edms.last_started() {
+        edms.answer(stat, HttpResponse::new(207).with_body(Vec::new()));
+        s.edms_pump();
+    }
+    joined(&mut s, &transport, id, if id == master { 0 } else { 1 }, master, 0);
+    bulk_ready(&mut s, &transport);
+    transport.take_sent();
+    transport.take_bulk_sent();
+    s.ui_requests.clear();
+    (s, transport, edms)
+}
+
+fn puts(edms: &craft_edms::RecordingTransport) -> usize {
+    edms.started().iter().filter(|(_, request)| request.method == craft_edms::Method::Put).count()
+}
+
+#[test]
+fn a_participant_asks_the_master_to_save_and_takes_the_version_it_reports() {
+    let (mut s, transport, edms) = in_session_from_the_edms(2, 1);
+    let theirs = OpPayload { command: "text.insert".into(), params: json!({"text": "Gemeinsam"}), ..OpPayload::default() };
+    transport.deliver(commit_frame(1, 1, 1, &theirs));
+    s.signal_pump();
+    assert!(s.dirty, "a confirmed edit is unsaved here too");
+
+    let puts_before = puts(&edms);
+    let asked = s.run("edms.save", &json!({})).unwrap();
+    assert!(asked["requested"].is_u64(), "{asked}");
+    assert_eq!(puts(&edms), puts_before, "nothing is written from here");
+    let sent = transport.take_sent();
+    assert_eq!((sent.len(), sent[0].kind, sent[0].local), (1, FrameType::SaveReq, asked["requested"].as_u64().unwrap() as u32));
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["saveAsked"], json!(true));
+
+    // The server's event about the master's PUT is no foreign change here.
+    let event = s
+        .run(
+            "edms.event",
+            &json!({"type": "postprocessing-finished", "data": {"itemid": "storage$space!item", "initiatorid": "master-client", "etag": "\"e9\""}}),
+        )
+        .unwrap();
+    assert_eq!(event["advice"], json!("none"), "{event}");
+
+    let saved = craft_signal::SavedPayload { etag: "\"e9\"".into(), by: 2, local: sent[0].local };
+    let mut frame = Frame::new(FrameType::Saved).with_payload(wire::encode(&saved).unwrap());
+    frame.session = 1;
+    frame.sender = 1;
+    frame.seq = 1;
+    transport.deliver(frame);
+    s.signal_pump();
+    assert!(!s.dirty, "saved up to the last commit");
+    let status = s.run("edms.status", &json!({})).unwrap();
+    assert_eq!((status["document"]["etag"].as_str(), status["document"]["state"].as_str()), (Some("\"e9\""), Some("clean")), "{status}");
+    assert!(s.ui_requests.iter().any(|r| r["signal"]["event"] == "saved" && r["signal"]["byMe"] == true));
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["saveAsked"], json!(false));
+}
+
+#[test]
+fn a_save_request_nobody_answers_is_reported_and_a_refusal_too() {
+    let (mut s, transport, _edms) = in_session_from_the_edms(2, 1);
+    s.run("edms.save", &json!({})).unwrap();
+    s.signal_save_wait_at(crate::signal::now_ms() + 31_000);
+    assert!(s.ui_requests.iter().any(|r| r["signal"]["event"] == "saveFailed" && r["signal"]["reason"] == "the master did not answer"));
+
+    s.ui_requests.clear();
+    let local = s.run("edms.save", &json!({})).unwrap()["requested"].as_u64().unwrap() as u32;
+    let mut refusal = Frame::new(FrameType::SaveFail).with_payload(b"incomplete: 1 item(s)".to_vec());
+    refusal.session = 1;
+    refusal.sender = 2;
+    refusal.local = local;
+    transport.deliver(refusal);
+    s.signal_pump();
+    assert!(
+        s.ui_requests
+            .iter()
+            .any(|r| r["signal"]["event"] == "saveFailed" && r["signal"]["reason"].as_str().is_some_and(|reason| reason.starts_with("incomplete")))
+    );
+}
+
+#[test]
+fn the_master_saves_for_a_participant_and_tells_everyone_the_version() {
+    use craft_edms::HttpResponse;
+    let (mut s, transport, edms) = in_session_from_the_edms(1, 1);
+    s.run("text.insert", &json!({"text": "Vom Master"})).unwrap();
+    transport.take_sent();
+
+    let mut asking = Frame::new(FrameType::SaveReq);
+    asking.session = 1;
+    asking.sender = 3;
+    asking.local = 4;
+    transport.deliver(asking);
+    s.signal_pump();
+    let (put, request) = edms.last_started().unwrap();
+    assert_eq!(request.method, craft_edms::Method::Put, "the master writes");
+    edms.answer(put, HttpResponse::new(204).with_header("ETag", "\"e5\"").with_header("OC-FileId", "storage$space!item"));
+    s.edms_pump();
+    let sent = transport.take_sent();
+    let saved = sent.iter().find(|frame| frame.kind == FrameType::Saved).expect("SAVED");
+    let payload: craft_signal::SavedPayload = wire::decode(&saved.payload).unwrap();
+    assert_eq!((payload.etag.as_str(), payload.by, payload.local, saved.seq), ("\"e5\"", 3, 4, 1));
+
+    // Its own save is announced as well (for nobody in particular).
+    s.run("text.insert", &json!({"text": "!"})).unwrap();
+    transport.take_sent();
+    s.run("edms.save", &json!({})).unwrap();
+    let (own, _) = edms.last_started().unwrap();
+    edms.answer(own, HttpResponse::new(204).with_header("ETag", "\"e6\""));
+    s.edms_pump();
+    let own_saved = transport.take_sent().into_iter().find(|frame| frame.kind == FrameType::Saved).expect("SAVED");
+    let payload: craft_signal::SavedPayload = wire::decode(&own_saved.payload).unwrap();
+    assert_eq!((payload.etag.as_str(), payload.by), ("\"e6\"", 0));
+}
+
+#[test]
+fn the_master_refuses_to_save_for_a_participant_while_content_is_on_its_way() {
+    let (mut s, transport, edms) = in_session_from_the_edms(1, 1);
+    // Content of a participant's picture is still on its way (the master shows its frame).
+    let png = noise_png(240, 160, 7);
+    let (_, theirs) = framed_picture(&png);
+    let mut proposal = commit_frame(3, 1, 0, &theirs);
+    proposal.kind = FrameType::Op;
+    transport.deliver(proposal);
+    s.signal_pump();
+    assert_eq!(s.signal.outstanding().len(), 1);
+    transport.take_sent();
+    let puts_before = puts(&edms);
+
+    let mut asking = Frame::new(FrameType::SaveReq);
+    asking.session = 1;
+    asking.sender = 3;
+    asking.local = 9;
+    transport.deliver(asking);
+    s.signal_pump();
+    assert_eq!(puts(&edms), puts_before, "nothing written");
+    let refusal = transport.take_sent().into_iter().find(|frame| frame.kind == FrameType::SaveFail).expect("SAVE_FAIL");
+    assert_eq!((refusal.sender, refusal.local), (3, 9));
+    assert!(String::from_utf8_lossy(&refusal.payload).starts_with("incomplete"));
+    assert!(s.ui_requests.is_empty() || !s.ui_requests.iter().any(|r| r["edms"]["event"] == "saveIncomplete"), "no question on the master's screen");
+}

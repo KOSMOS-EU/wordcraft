@@ -273,6 +273,11 @@ fn incomplete(s: &Session) -> Vec<Value> {
 }
 
 fn save(s: &mut Session, v: &Value) -> CmdResult {
+    // In a collaboration only the master writes: a participant asks it (SIGNAL.md, Speichern).
+    if s.signal.collaborates() && s.edms.document(s.document_id()).is_some() {
+        let local = s.signal_request_save()?;
+        return Ok(json!({"requested": local}));
+    }
     // In sync or not at all: with content still on its way, saving needs a second yes.
     let missing = incomplete(s);
     if !missing.is_empty() && !p::bool(v, "incomplete").unwrap_or(false) {
@@ -291,7 +296,10 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
         (doc.location.clone(), doc.name.clone())
     };
     let bytes = document_bytes(s, &name)?;
-    pending(s, Request::Put { location, bytes }, Action::Save)
+    let answer = pending(s, Request::Put { location, bytes }, Action::Save)?;
+    // The master reports the version to the session once it is through (`SAVED`).
+    s.signal.begin_save();
+    Ok(answer)
 }
 
 fn target(v: &Value) -> Result<(Location, String, bool), CmdError> {
@@ -363,6 +371,11 @@ fn event(s: &mut Session, v: &Value) -> CmdResult {
     let foreign = remote.foreign(&own);
     if !concerns || !foreign {
         return Ok(json!({"concerns": concerns, "foreign": foreign, "advice": "none"}));
+    }
+    // In a collaboration the master writes the new versions and announces them (`SAVED`); the
+    // server's event about them is no foreign change here (the document is locked for anyone else).
+    if s.signal.follows_master() && remote.kind.is_new_version() {
+        return Ok(json!({"concerns": true, "foreign": true, "advice": "none", "collaboration": true}));
     }
     let advice = if remote.kind.is_new_version() {
         doc.tracker.remote_changed(remote.etag.as_deref())

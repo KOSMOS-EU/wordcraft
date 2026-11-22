@@ -33,7 +33,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("signal.poll", "Collaboration events", SIGNAL, poll)
             .params(r#"{} → {"events": [{"event": joined|mode|roster|master|applied|confirmed|rejected|committed|closed|error, ...} ...]} (applied already)"#)
             .pure(),
-        CommandSpec::new("signal.saved", "Tell the collaboration the document is saved", SIGNAL, saved).params(r#"{} → {"seq"}; only the master"#).pure(),
+        CommandSpec::new("signal.saved", "Tell the collaboration the document is saved", SIGNAL, saved)
+            .params(r#"{"etag"?: the version's ETag} → {"seq"}; only the master (edms.save of the master does it by itself)"#)
+            .pure(),
     ]
 }
 
@@ -91,8 +93,10 @@ fn poll(s: &mut Session, _v: &Value) -> CmdResult {
     Ok(json!({"events": s.signal.take_log(), "state": s.signal.status()["state"]}))
 }
 
-fn saved(s: &mut Session, _v: &Value) -> CmdResult {
+fn saved(s: &mut Session, v: &Value) -> CmdResult {
+    let etag = p::str(v, "etag").unwrap_or_default().to_string();
     let port = s.signal.port_mut()?;
-    port.saved().map_err(|e| CmdError::Failed(e.to_string()))?;
-    Ok(json!({"seq": port.seq()}))
+    let seq = port.seq();
+    port.saved(seq, &craft_signal::SavedPayload { etag, by: 0, local: 0 }).map_err(|e| CmdError::Failed(e.to_string()))?;
+    Ok(json!({"seq": seq}))
 }

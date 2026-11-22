@@ -553,6 +553,14 @@ impl WordApp {
             "closed" => {
                 crate::i18n::fmt(tl!("Collaboration ended: {reason}"), &[("reason", signal.get("reason").and_then(Value::as_str).unwrap_or(""))])
             }
+            // Saving in a collaboration: a participant asks the master, the master writes and tells everyone.
+            "saveRequested" => tl!("Collaboration: the master is asked to save").to_string(),
+            "saved" if signal.get("byMe").and_then(Value::as_bool) == Some(true) => tl!("Saved by the master of the collaboration").to_string(),
+            "saved" => tl!("The master of the collaboration saved the document").to_string(),
+            "saveFailed" => crate::i18n::fmt(
+                tl!("Collaboration: not saved ({reason})"),
+                &[("reason", signal.get("reason").and_then(Value::as_str).unwrap_or(""))],
+            ),
             // Who joins later takes the master's document in the place of its own.
             "synced" => tl!("Collaboration: the document is up to date with the session").to_string(),
             "syncFailed" => crate::i18n::fmt(

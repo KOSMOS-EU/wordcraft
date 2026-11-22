@@ -55,6 +55,9 @@ const SYNC_ASK_BYTES_MS: u64 = 2_000;
 /// Most commits kept while the state is on its way; more than that and the wait is given up.
 const MAX_SYNC_COMMITS: usize = 4096;
 
+/// How long a participant waits for the master to save on its behalf before it says so.
+const SAVE_ANSWER_MS: u64 = 30_000;
+
 /// The state a master answers a sync request with: the document as a `.docx` copy.
 const SYNC_STATE_FORMAT: &str = "docx";
 const SYNC_STATE_NAME: &str = "state.docx";
@@ -136,6 +139,14 @@ struct NamedState {
     bytes_asked: bool,
 }
 
+/// A save the master runs: the state up to `seq`, for participant `by` (0: itself) and its request `local`.
+#[derive(Clone, Copy, Debug)]
+struct SaveRun {
+    seq: u32,
+    by: u16,
+    local: u32,
+}
+
 /// A frame `attached` put into a command's parameters, before the command ran.
 struct FramedParameter {
     hash: Hash,
@@ -160,6 +171,12 @@ pub struct SignalState {
     derived: Vec<Derived>,
     /// Set while this participant waits for the master's state after joining.
     syncing: Option<Syncing>,
+    /// A participant's own request to the master to save: its id and when it went out.
+    save_asked: Option<(u32, u64)>,
+    /// Only the master: who the save about to start is for (`SAVE_REQ` of a participant), and the
+    /// save that is running (up to which commit, for whom), to report it as `SAVED` or refuse it.
+    save_for_next: Option<(u16, u32)>,
+    save_running: Option<SaveRun>,
     /// A document opened from the EDMS does not join its collaboration by itself (`signal.auto`).
     no_auto_join: bool,
     /// The document (its EDMS id) the automatic join was last tried for: once a document, the
@@ -223,6 +240,48 @@ impl SignalState {
     /// Picture Format made `media` from `base` while `base` stood in for a picture.
     pub(crate) fn note_derived(&mut self, base: &str, base_bytes: Arc<Vec<u8>>, media: &str, bytes: Arc<Vec<u8>>, edit: PictureEdit) {
         self.derived.push(Derived { base: base.to_string(), base_bytes, media: media.to_string(), bytes, edit });
+    }
+
+    /// Joined, editing, not the master: such a participant asks the master to save instead of
+    /// writing to the EDMS itself (SIGNAL.md: in a session only the master writes).
+    pub fn collaborates(&self) -> bool {
+        self.port.as_ref().is_some_and(|p| p.joined() && p.mode() == Mode::Edit && !p.is_master())
+    }
+
+    /// Joined in any mode and not the master: new versions of the document come from the master,
+    /// announced as `SAVED`, not as a foreign change.
+    pub fn follows_master(&self) -> bool {
+        self.port.as_ref().is_some_and(|p| p.joined() && !p.is_master())
+    }
+
+    /// Only the master: a save of the document starts now, with the state up to the current commit.
+    /// It is the one a participant asked for if one did (see [`Session::signal_apply`]).
+    pub(crate) fn begin_save(&mut self) {
+        let requested = self.save_for_next.take();
+        let Some(port) = self.port.as_ref().filter(|p| p.joined() && p.is_master()) else { return };
+        let (by, local) = requested.unwrap_or((0, 0));
+        self.save_running = Some(SaveRun { seq: port.seq(), by, local });
+    }
+
+    /// Only the master: the save is through as version `etag`; everyone hears it.
+    pub(crate) fn save_finished(&mut self, etag: Option<&str>) {
+        let Some(run) = self.save_running.take() else { return };
+        let Some(port) = self.port.as_mut() else { return };
+        let saved = craft_signal::SavedPayload { etag: etag.unwrap_or_default().to_string(), by: run.by, local: run.local };
+        if let Err(e) = port.saved(run.seq, &saved) {
+            self.note(json!({"event": "error", "message": format!("SAVED could not be sent: {e}")}));
+        }
+    }
+
+    /// Only the master: the save failed; who asked for it hears why.
+    pub(crate) fn save_failed(&mut self, reason: &str) {
+        let Some(run) = self.save_running.take() else { return };
+        if run.by == 0 {
+            return;
+        }
+        if let Some(port) = self.port.as_mut() {
+            let _ = port.refuse_save(run.by, run.local, reason);
+        }
     }
 
     pub fn set_auto_join(&mut self, on: bool) {
@@ -341,6 +400,7 @@ impl SignalState {
         status["traces"] = json!(self.traces.len());
         status["framed"] = json!(self.framed());
         status["syncing"] = json!(self.syncing());
+        status["saveAsked"] = json!(self.save_asked.is_some());
         status
     }
 
@@ -527,6 +587,87 @@ impl Session {
             self.signal_apply(item);
         }
         self.signal_sync_step_at(now_ms());
+        self.signal_save_wait_at(now_ms());
+    }
+
+    /// A participant's save: ask the master. Returns the request's id.
+    pub(crate) fn signal_request_save(&mut self) -> Result<u32, CmdError> {
+        let port = self.signal.port.as_mut().ok_or_else(|| CmdError::Disabled("no Craft Signal transport".into()))?;
+        let local = port.request_save().map_err(|e| CmdError::Failed(e.to_string()))?;
+        self.signal.save_asked = Some((local, now_ms()));
+        let entry = json!({"event": "saveRequested", "local": local});
+        self.signal.note(entry.clone());
+        self.push_ui_request(json!({"signal": entry}));
+        Ok(local)
+    }
+
+    /// The master did not answer a save request in time: say so, and let the person ask again.
+    pub(crate) fn signal_save_wait_at(&mut self, now: u64) {
+        let Some((_, asked_ms)) = self.signal.save_asked else { return };
+        if now.saturating_sub(asked_ms) <= SAVE_ANSWER_MS {
+            return;
+        }
+        self.signal.save_asked = None;
+        let entry = json!({"event": "saveFailed", "reason": "the master did not answer"});
+        self.signal.note(entry.clone());
+        self.push_ui_request(json!({"signal": entry}));
+    }
+
+    /// Only the master: participant `sender` asks it to save. It saves only what is complete and
+    /// only a document that is in the EDMS; anything else is refused with the reason, never asked
+    /// on this screen (the person here did not ask for it).
+    fn signal_save_for(&mut self, sender: u16, local: u32) {
+        let refusal = if !self.signal.outstanding().is_empty() {
+            Some(format!("incomplete: {} item(s) of the collaboration are still on their way", self.signal.outstanding().len()))
+        } else if self.edms.document(self.document_id()).is_none() {
+            Some("the document is not stored in the EDMS".to_string())
+        } else if self.signal.save_running.is_some() {
+            Some("a save is already running".to_string())
+        } else {
+            None
+        };
+        let refusal = refusal.or_else(|| {
+            self.signal.save_for_next = Some((sender, local));
+            let result = self.run("edms.save", &json!({}));
+            self.signal.save_for_next = None;
+            result.err().map(|e| e.to_string())
+        });
+        let entry = json!({"event": "saveForParticipant", "sender": sender, "refused": refusal});
+        self.signal.note(entry);
+        if let Some(reason) = refusal
+            && let Some(port) = self.signal.port.as_mut()
+        {
+            let _ = port.refuse_save(sender, local, &reason);
+        }
+    }
+
+    /// The master saved up to `seq` as a new version: this participant holds that version now and
+    /// is saved, unless it has seen more since.
+    fn signal_saved_by_master(&mut self, seq: u32, saved: &craft_signal::SavedPayload) {
+        let me = self.signal.port.as_ref().map_or(0, |port| port.id());
+        let mine = saved.by != 0 && saved.by == me && self.signal.save_asked.is_some_and(|(asked, _)| asked == saved.local);
+        if mine {
+            self.signal.save_asked = None;
+        }
+        let id = self.document_id();
+        let up_to_date = self.signal.port.as_ref().is_some_and(|port| port.seq() == seq) && self.signal.pending_locals().is_empty();
+        let mut clean = false;
+        if !saved.etag.is_empty()
+            && let Some(doc) = self.edms.document_mut(id)
+        {
+            doc.location.etag = Some(saved.etag.clone());
+            doc.tracker.saved(Some(&saved.etag));
+            if up_to_date {
+                self.dirty = false;
+                clean = true;
+            } else {
+                // Commits after the saved state are here already: still unsaved.
+                doc.tracker.edited();
+            }
+        }
+        let entry = json!({"event": "saved", "seq": seq, "byMe": mine, "clean": clean});
+        self.signal.note(entry.clone());
+        self.push_ui_request(json!({"signal": entry}));
     }
 
     /// Join the collaboration of the active document: at the instance it was opened from, with the
@@ -833,8 +974,15 @@ impl Session {
                 }
             }
             Incoming::Presence { .. } => {}
-            Incoming::Saved { seq } => {
-                self.signal.note(json!({"event": "saved", "seq": seq}));
+            Incoming::Saved { seq, saved } => self.signal_saved_by_master(seq, &saved),
+            Incoming::SaveRequested { sender, local } => self.signal_save_for(sender, local),
+            Incoming::SaveFailed { local, reason } => {
+                if self.signal.save_asked.is_some_and(|(asked, _)| asked == local) {
+                    self.signal.save_asked = None;
+                }
+                let entry = json!({"event": "saveFailed", "reason": reason});
+                self.signal.note(entry.clone());
+                self.push_ui_request(json!({"signal": entry}));
             }
             Incoming::BlobComplete { hash } => {
                 // The content behind a frame arrived: it takes the frame's place.
@@ -844,6 +992,9 @@ impl Session {
                 self.push_ui_request(json!({"signal": entry}));
             }
             Incoming::Closed { reason } => {
+                self.signal.save_asked = None;
+                self.signal.save_for_next = None;
+                self.signal.save_running = None;
                 self.signal.frames.clear();
                 self.signal.derived.clear();
                 self.signal.syncing = None;
