@@ -654,9 +654,11 @@ fn a_framed_picture_is_swapped_in_when_it_arrives_also_in_the_undo_steps() {
     s.run("text.insert", &json!({"text": "Bildunterschrift"})).unwrap();
     transport.take_sent();
 
+    assert_eq!(s.signal.media_epoch(), 0);
     deliver_blob(&transport, picture.as_bytes());
     s.signal_pump();
     assert_eq!(s.doc.media.get(&key).map(|bytes| bytes.as_slice()), Some(png.as_slice()), "the picture under the frame's name");
+    assert!(s.signal.media_epoch() > 0, "a drawn page with this picture must not be taken from the cache");
     assert_eq!(s.doc.media.len(), 1);
     assert_eq!(crate::cmd::objects::original_size(&s, &key), framed_size, "the same size as its frame");
     assert!(s.signal.outstanding().is_empty());

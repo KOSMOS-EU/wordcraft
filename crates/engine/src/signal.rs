@@ -177,6 +177,9 @@ pub struct SignalState {
     /// save that is running (up to which commit, for whom), to report it as `SAVED` or refuse it.
     save_for_next: Option<(u16, u32)>,
     save_running: Option<SaveRun>,
+    /// Counts the pictures whose bytes were exchanged under their name (a frame for its picture).
+    /// Whoever caches drawn pages by the names of their pictures needs it in the key: the name stays.
+    media_epoch: u64,
     /// A document opened from the EDMS does not join its collaboration by itself (`signal.auto`).
     no_auto_join: bool,
     /// The document (its EDMS id) the automatic join was last tried for: once a document, the
@@ -282,6 +285,11 @@ impl SignalState {
         if let Some(port) = self.port.as_mut() {
             let _ = port.refuse_save(run.by, run.local, reason);
         }
+    }
+
+    /// See the field: changes whenever a picture's bytes changed under the same media name.
+    pub fn media_epoch(&self) -> u64 {
+        self.media_epoch
     }
 
     pub fn set_auto_join(&mut self, on: bool) {
@@ -1057,6 +1065,9 @@ impl Session {
             if let Journal::Own { before: Some(snapshot), .. } = entry {
                 replaced += snapshot.replace_media(key, stand_in, content);
             }
+        }
+        if replaced > 0 {
+            self.signal.media_epoch = self.signal.media_epoch.wrapping_add(1);
         }
         replaced
     }

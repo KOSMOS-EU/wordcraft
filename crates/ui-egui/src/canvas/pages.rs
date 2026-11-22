@@ -95,7 +95,9 @@ pub(super) fn page_shows(app: &mut WordApp, layout: &std::sync::Arc<DocLayout>, 
 /// The texture cache key of page `i`: its content, the view, and the raster scale.
 pub(super) fn page_key(app: &mut WordApp, layout: &std::sync::Arc<DocLayout>, i: usize, view: u64, scale_px: f32) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (view, scale_px.to_bits(), app.canvas.page_keys.content(layout, i)).hash(&mut h);
+    // kosmos: a picture of the collaboration can get its bytes under the name it already had (its
+    // frame is swapped for it); the layout only knows the name, so the swaps count here too.
+    (view, scale_px.to_bits(), app.canvas.page_keys.content(layout, i), app.session.signal.media_epoch()).hash(&mut h);
     h.finish()
 }
 
