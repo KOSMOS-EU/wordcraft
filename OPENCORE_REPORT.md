@@ -22,6 +22,14 @@ Stand: 22.11.2026, Fork-Tag `v0.18.1-kosmos.16` (`9aed340e`), Basis Upstream `v0
 Die Patchgröße ist der wichtigste Wert dieses Berichts: fast nichts davon ist Fachlogik von WordCraft. Ziel nach
 dem Herauslösen (Plan, Stufe 0): unter 400 Zeilen.
 
+Verlauf während Stufe 0 (gemessen mit `git diff --shortstat` gegen Upstream `main`):
+
+| Stand | Patch | Was ins Kit `craft-opencore` ging |
+|---|---|---|
+| kosmos.20 / .21 (22.11.) | 51 Dateien, 7067 Zeilen dazu | nichts; .21 bindet nur das Kit statt drei Crates ein |
+| `62b183f6` (22.11.) | 51 Dateien, 6248 Zeilen dazu | Bereich `session`: Zustand, Pumpe, Befehle `edms.*` (945 Zeilen aus `edms.rs` und `cmd/edms.rs`); WordCraft behält den Adapter (`DocumentHost`, 126 Zeilen) und das Vorschalten der Zusammenarbeit beim Speichern |
+| offen | | Web-Transporte, native Transporte, Ortswähler, Tests von `edms.rs` in den Prüfsatz |
+
 ## 2. Wo das Plugin in der App hängt
 
 | Stelle der App | Was dort hängt | Bewertung |
