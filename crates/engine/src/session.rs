@@ -84,7 +84,7 @@ pub struct Session {
     pub page_hint: usize,
     pub registry: Arc<Registry>,
     /// Where the open documents live in the EDMS (kosmos), and the requests in flight.
-    pub edms: crate::edms::EdmsState,
+    pub edms: craft_opencore::session::EdmsSession,
     /// kosmos: Craft Signal, the session's seat in a collaboration (`signal.*`).
     pub signal: crate::signal::SignalState,
     /// Author name for comments and tracked changes.
