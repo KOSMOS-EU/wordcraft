@@ -1,14 +1,14 @@
 //! The EDMS commands (kosmos) against a recording transport: nothing touches the network, the
-//! answers are what cloud.xwork.cloud answered on 2026-11-16 (fixtures in craft-edms).
+//! answers are what cloud.xwork.cloud answered on 2026-11-16 (fixtures in craft-opencore).
 
-use craft_edms::{Client, HttpResponse, Method, RecordingTransport};
+use craft_opencore::edms::{Client, HttpResponse, Method, RecordingTransport};
 use serde_json::{Value, json};
 
 use crate::{Session, blank_document};
 
 const DRIVE: &str = "b894e89e-a7fd-4385-92fc-b5e0bb2659fd$8c9cde70-836d-4eda-81bf-99102e838af1";
 const FILE_ID: &str = "b894e89e-a7fd-4385-92fc-b5e0bb2659fd$8c9cde70-836d-4eda-81bf-99102e838af1!f820fbb2-e279-4fa4-9938-c63d07c733f8";
-const DRIVES: &[u8] = include_bytes!("../../../../../opencraft/crates/craft-edms/tests/fixtures/xwork/drives.json");
+const DRIVES: &[u8] = include_bytes!("../../../../../opencraft/crates/craft-opencore/tests/fixtures/xwork/drives.json");
 
 fn session() -> (Session, RecordingTransport) {
     let transport = RecordingTransport::default();

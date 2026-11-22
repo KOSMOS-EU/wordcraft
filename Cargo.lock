@@ -1054,16 +1054,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "craft-edms"
-version = "0.1.0"
-dependencies = [
- "craft-dav",
- "craft-xml",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "craft-font-catalog"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=762a06a4c6b48b522b7d4de84a87917ef90265e6#762a06a4c6b48b522b7d4de84a87917ef90265e6"
@@ -1123,6 +1113,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-opencore"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "craft-dav",
+ "craft-xml",
+ "egui",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "craft-pdf"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=6e03f65bf45181db77ba6229716e6624db9eb25b#6e03f65bf45181db77ba6229716e6624db9eb25b"
@@ -1154,24 +1157,6 @@ dependencies = [
  "miniz_oxide 0.9.1",
  "toml",
  "unicode-normalization",
-]
-
-[[package]]
-name = "craft-signal"
-version = "0.1.0"
-dependencies = [
- "ciborium",
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "craft-signal-egui"
-version = "0.1.0"
-dependencies = [
- "craft-signal",
- "egui",
 ]
 
 [[package]]
@@ -6950,9 +6935,9 @@ dependencies = [
  "arboard",
  "chrono",
  "clipboard-win",
+ "craft-opencore",
  "craft-print",
  "craft-proof",
- "craft-signal",
  "craft-update",
  "dispatch2",
  "eframe",
@@ -7068,11 +7053,10 @@ version = "0.18.1"
 dependencies = [
  "cfb",
  "chrono",
- "craft-edms",
  "craft-font-catalog",
  "craft-font-store",
+ "craft-opencore",
  "craft-proof",
- "craft-signal",
  "encoding_rs",
  "getrandom 0.3.4",
  "image",
@@ -7229,10 +7213,8 @@ dependencies = [
  "accesskit_consumer",
  "cfb",
  "chrono",
- "craft-edms",
  "craft-i18n",
- "craft-signal",
- "craft-signal-egui",
+ "craft-opencore",
  "craft-ui",
  "craft-update",
  "craft-window",
@@ -7262,8 +7244,7 @@ dependencies = [
 name = "wordcraft-web"
 version = "0.18.1"
 dependencies = [
- "craft-edms",
- "craft-signal",
+ "craft-opencore",
  "craft-web-api",
  "craft-web-host",
  "eframe",

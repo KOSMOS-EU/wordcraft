@@ -1,11 +1,11 @@
 //! The EDMS transport of the web build (kosmos): every request is a browser `fetch`, answered in
 //! a later frame. The engine's `edms.*` commands plan the requests and read the answers
-//! (`craft-edms`); this file only moves bytes and asks for a repaint when one arrived.
+//! (`craft-opencore`, area `edms`); this file only moves bytes and asks for a repaint when one arrived.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use craft_edms::{HttpRequest, HttpResponse, RequestId, Transport};
+use craft_opencore::edms::{HttpRequest, HttpResponse, RequestId, Transport};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen_futures::JsFuture;
 

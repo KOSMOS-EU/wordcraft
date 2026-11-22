@@ -1,4 +1,4 @@
-//! kosmos: the native transport of Craft Signal (`craft-signal`): the ticket by HTTP (ureq) and the
+//! kosmos: the native transport of Craft Signal (`craft-opencore`, area `signal`): the ticket by HTTP (ureq) and the
 //! WebSocket to the relay (tungstenite), each on its own thread. Nothing blocks the window: what
 //! arrives is queued and taken by the client on the next frame, which this transport asks for.
 //! The bulk channel is a second socket of the same kind with its own thread, so the bytes of a
@@ -9,8 +9,8 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel as channel_pair};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use craft_signal::transport::{Event, Transport};
-use craft_signal::wire::TicketRequest;
+use craft_opencore::signal::transport::{Event, Transport};
+use craft_opencore::signal::wire::TicketRequest;
 use tungstenite::Message;
 use tungstenite::stream::MaybeTlsStream;
 

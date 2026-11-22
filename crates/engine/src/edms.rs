@@ -1,6 +1,6 @@
 //! The EDMS side of a session (kosmos, `opencraft/EDMS_NATIVE.md` §9): where each open document
 //! lives in OpenCore/OpenCloud, the change tracker per document, the requests in flight and
-//! their results. The network itself is the shell's: it installs a [`craft_edms::Port`] (a
+//! their results. The network itself is the shell's: it installs a [`craft_opencore::edms::Port`] (a
 //! `Client` over its transport), the commands `edms.*` (`cmd::edms`) submit requests through it,
 //! and [`Session::edms_pump`] applies what came back: a fetched document is opened, a saved one
 //! gets its new ETag, a conflict asks the front end.
@@ -11,8 +11,8 @@
 
 use std::collections::HashMap;
 
-use craft_edms::change::{Advice, State, Tracker};
-use craft_edms::{EdmsError, Location, Lookup, Outcome, Port, Reply, Request, RequestId, Sidecars, WorkDir};
+use craft_opencore::edms::change::{Advice, State, Tracker};
+use craft_opencore::edms::{EdmsError, Location, Lookup, Outcome, Port, Reply, Request, RequestId, Sidecars, WorkDir};
 use serde_json::{Value, json};
 
 use crate::{CmdError, Session};
@@ -297,7 +297,7 @@ pub fn error_json(error: &EdmsError) -> Value {
 }
 
 /// A listing entry as the outcomes carry it.
-pub fn entry_json(entry: &craft_edms::Entry) -> Value {
+pub fn entry_json(entry: &craft_opencore::edms::Entry) -> Value {
     json!({
         "name": entry.name,
         "id": entry.id,
@@ -315,7 +315,7 @@ pub fn entry_json(entry: &craft_edms::Entry) -> Value {
     })
 }
 
-fn drive_json(drive: &craft_edms::Drive) -> Value {
+fn drive_json(drive: &craft_opencore::edms::Drive) -> Value {
     json!({"id": drive.id, "name": drive.name, "type": drive.drive_type, "alias": drive.alias, "davUrl": drive.dav_url})
 }
 

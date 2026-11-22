@@ -30,11 +30,9 @@ wordcraft-pdf = { path = "crates/pdf" }
 # `language-pack` kind is #486 (CP4.1).
 wordcraft-proof = { package = "craft-proof", git = "https://github.com/storytold/craft-libs", rev = "01315d9c92b5b0e69082d35ca56099461a1efd45", version = "=0.1.0" }
 craft-font-store = { git = "https://github.com/storytold/craft-libs", rev = "762a06a4c6b48b522b7d4de84a87917ef90265e6", version = "=0.1.0" }
-# kosmos: the EDMS module (OpenCore/OpenCloud) lives in the opencraft repository next to this checkout
+# kosmos: the OpenCore kit (EDMS and Craft Signal) lives in the opencraft repository next to this checkout
 # until it has a home upstream; see opencraft/EDMS_NATIVE.md.
-craft-edms = { path = "../opencraft/crates/craft-edms" }
-craft-signal = { path = "../opencraft/crates/craft-signal" }
-craft-signal-egui = { path = "../opencraft/crates/craft-signal-egui" }
+craft-opencore = { path = "../opencraft/crates/craft-opencore" }
 craft-font-catalog = { git = "https://github.com/storytold/craft-libs", rev = "762a06a4c6b48b522b7d4de84a87917ef90265e6", version = "=0.1.0" }
 wordcraft-engine = { path = "crates/engine" }
 wordcraft-mcp = { path = "crates/mcp" }

@@ -8,8 +8,8 @@
 //! pictures of the same size get two media entries, and the same picture twice gets one, as
 //! the originals would.
 
-use craft_signal::Hash;
-use craft_signal::blobs::hex;
+use craft_opencore::signal::Hash;
+use craft_opencore::signal::blobs::hex;
 
 use crate::cmd::insert::base64_decode;
 

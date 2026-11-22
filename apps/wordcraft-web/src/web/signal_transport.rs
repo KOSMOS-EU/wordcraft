@@ -1,4 +1,4 @@
-//! kosmos: the browser transport of Craft Signal (`craft-signal`): the ticket by `fetch`, the
+//! kosmos: the browser transport of Craft Signal (`craft-opencore`, area `signal`): the ticket by `fetch`, the
 //! frames over the browser's `WebSocket`. Nothing blocks the frame: what arrives is queued, a
 //! repaint is asked for, and the client takes it on the next frame.
 //!
@@ -10,8 +10,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use craft_signal::transport::{Event, Transport};
-use craft_signal::wire::TicketRequest;
+use craft_opencore::signal::transport::{Event, Transport};
+use craft_opencore::signal::wire::TicketRequest;
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::JsFuture;

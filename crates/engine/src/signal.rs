@@ -1,5 +1,5 @@
 //! Craft Signal in the session (kosmos, `opencraft/SIGNAL.md`): the seat of this document in a
-//! collaboration. The shell installs a [`craft_signal::Port`] (a `Client` over its transport);
+//! collaboration. The shell installs a [`craft_opencore::signal::Port`] (a `Client` over its transport);
 //! every edit of the document goes out as a proposal ([`Session::signal_record`], called from
 //! `Session::run`), what the master confirms comes back and is applied ([`Session::signal_pump`],
 //! once per frame), and as the master this session applies the others' proposals and confirms
@@ -23,10 +23,10 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-use craft_signal::blobs::MAX_PREVIEW_BYTES;
-use craft_signal::frame::MAX_CONTROL_PAYLOAD;
-use craft_signal::wire::Mode;
-use craft_signal::{Attachment, ConnectRequest, Hash, Incoming, OpPayload, Outstanding, Port, PreviewKind, SignalError};
+use craft_opencore::signal::blobs::MAX_PREVIEW_BYTES;
+use craft_opencore::signal::frame::MAX_CONTROL_PAYLOAD;
+use craft_opencore::signal::wire::Mode;
+use craft_opencore::signal::{Attachment, ConnectRequest, Hash, Incoming, OpPayload, Outstanding, Port, PreviewKind, SignalError};
 use serde_json::{Value, json};
 use wordcraft_doc::{Document, Path, StoryRef};
 
@@ -270,7 +270,7 @@ impl SignalState {
     pub(crate) fn save_finished(&mut self, etag: Option<&str>) {
         let Some(run) = self.save_running.take() else { return };
         let Some(port) = self.port.as_mut() else { return };
-        let saved = craft_signal::SavedPayload { etag: etag.unwrap_or_default().to_string(), by: run.by, local: run.local };
+        let saved = craft_opencore::signal::SavedPayload { etag: etag.unwrap_or_default().to_string(), by: run.by, local: run.local };
         if let Err(e) = port.saved(run.seq, &saved) {
             self.note(json!({"event": "error", "message": format!("SAVED could not be sent: {e}")}));
         }
@@ -314,7 +314,7 @@ impl SignalState {
     /// there ([`signal_frame`]); anything else that big has to be at the master whole before
     /// the command counts. A reduced preview of a big picture is not built yet.
     fn detach(&mut self, op: &mut OpPayload) -> Result<(), SignalError> {
-        let fits = |op: &OpPayload| craft_signal::wire::encode(op).map(|payload| payload.len() <= MAX_CONTROL_PAYLOAD);
+        let fits = |op: &OpPayload| craft_opencore::signal::wire::encode(op).map(|payload| payload.len() <= MAX_CONTROL_PAYLOAD);
         if fits(op)? {
             return Ok(());
         }
@@ -651,7 +651,7 @@ impl Session {
 
     /// The master saved up to `seq` as a new version: this participant holds that version now and
     /// is saved, unless it has seen more since.
-    fn signal_saved_by_master(&mut self, seq: u32, saved: &craft_signal::SavedPayload) {
+    fn signal_saved_by_master(&mut self, seq: u32, saved: &craft_opencore::signal::SavedPayload) {
         let me = self.signal.port.as_ref().map_or(0, |port| port.id());
         let mine = saved.by != 0 && saved.by == me && self.signal.save_asked.is_some_and(|(asked, _)| asked == saved.local);
         if mine {
@@ -819,7 +819,7 @@ impl Session {
                 self.signal.traces.clear();
                 self.signal.journal.clear();
                 self.signal.resent_locals.clear();
-                let entry = json!({"event": "joined", "session": session, "id": id, "mode": mode.name(), "rank": if rank == craft_signal::wire::NO_RANK { Value::Null } else { json!(rank) }, "master": master, "seq": seq, "reason": reason});
+                let entry = json!({"event": "joined", "session": session, "id": id, "mode": mode.name(), "rank": if rank == craft_opencore::signal::wire::NO_RANK { Value::Null } else { json!(rank) }, "master": master, "seq": seq, "reason": reason});
                 self.signal.note(entry.clone());
                 self.push_ui_request(json!({"signal": entry}));
                 // Joining a session someone else leads: its document is the master's, not the
@@ -964,7 +964,7 @@ impl Session {
                 });
                 let entry = match answered {
                     Ok((hash, size)) => {
-                        json!({"event": "syncRequested", "sender": sender, "base": base, "answered": true, "hash": craft_signal::blobs::hex(&hash), "size": size})
+                        json!({"event": "syncRequested", "sender": sender, "base": base, "answered": true, "hash": craft_opencore::signal::blobs::hex(&hash), "size": size})
                     }
                     Err(error) => json!({"event": "syncRequested", "sender": sender, "base": base, "answered": false, "error": error}),
                 };
@@ -973,7 +973,7 @@ impl Session {
             Incoming::Sync { seq, payload } => {
                 let now = now_ms();
                 let Some(syncing) = self.signal.syncing.as_mut() else { return };
-                match craft_signal::wire::decode::<craft_signal::SyncPayload>(&payload) {
+                match craft_opencore::signal::wire::decode::<craft_opencore::signal::SyncPayload>(&payload) {
                     Ok(sync) if sync.format == SYNC_STATE_FORMAT => {
                         syncing.state = Some(NamedState { hash: sync.state.hash, seq, named_ms: now, bytes_asked: false })
                     }
@@ -995,7 +995,7 @@ impl Session {
             Incoming::BlobComplete { hash } => {
                 // The content behind a frame arrived: it takes the frame's place.
                 let replaced = self.signal_fill_frames(&hash);
-                let entry = json!({"event": "blobComplete", "hash": craft_signal::blobs::hex(&hash), "replaced": replaced});
+                let entry = json!({"event": "blobComplete", "hash": craft_opencore::signal::blobs::hex(&hash), "replaced": replaced});
                 self.signal.note(entry.clone());
                 self.push_ui_request(json!({"signal": entry}));
             }
@@ -1051,7 +1051,7 @@ impl Session {
             if self.signal.frames.iter().any(|frame| frame.hash == hash && frame.media == *media) {
                 continue;
             }
-            let entry = json!({"event": "framed", "media": media, "hash": craft_signal::blobs::hex(&hash)});
+            let entry = json!({"event": "framed", "media": media, "hash": craft_opencore::signal::blobs::hex(&hash)});
             self.signal.frames.push(Frame { hash, media: media.clone(), stand_in: bytes.clone() });
             self.signal.note(entry.clone());
             self.push_ui_request(json!({"signal": entry}));
@@ -1242,7 +1242,7 @@ fn held_picture(doc: &Document, attachment: &Attachment) -> Option<String> {
         .values()
         .filter(|bytes| (bytes.len().div_ceil(3) as u64).saturating_mul(4) == attachment.size)
         .map(|bytes| crate::cmd::insert::base64_encode(bytes))
-        .find(|base64| craft_signal::blobs::hash_of(base64.as_bytes()) == attachment.hash)
+        .find(|base64| craft_opencore::signal::blobs::hash_of(base64.as_bytes()) == attachment.hash)
 }
 
 fn signal_error(e: SignalError) -> CmdError {

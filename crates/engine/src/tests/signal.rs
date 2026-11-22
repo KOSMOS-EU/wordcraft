@@ -1,10 +1,10 @@
 //! Craft Signal in the session (kosmos) against the client's recording transport: nothing touches
 //! the network; the relay's frames are played in by hand.
 
-use craft_signal::frame::{Frame, FrameType};
-use craft_signal::transport::Event;
-use craft_signal::wire::{self, MasterPayload, OpPayload, WelcomePayload};
-use craft_signal::{Client, RecordingTransport};
+use craft_opencore::signal::frame::{Frame, FrameType};
+use craft_opencore::signal::transport::Event;
+use craft_opencore::signal::wire::{self, MasterPayload, OpPayload, WelcomePayload};
+use craft_opencore::signal::{Client, RecordingTransport};
 use serde_json::{Value, json};
 
 use crate::{Session, blank_document};
@@ -36,7 +36,7 @@ fn joined(s: &mut Session, transport: &RecordingTransport, id: u16, rank: u16, m
 /// naming it on the control channel.
 fn answer_with_state(s: &mut Session, transport: &RecordingTransport, id: u16, seq: u32, state: &[u8]) {
     deliver_blob(transport, state);
-    let payload = craft_signal::SyncPayload { format: "docx".into(), state: Attachment::whole("state", state) };
+    let payload = craft_opencore::signal::SyncPayload { format: "docx".into(), state: Attachment::whole("state", state) };
     let mut answer = Frame::new(FrameType::Sync).with_payload(wire::encode(&payload).unwrap());
     answer.session = 1;
     answer.sender = id;
@@ -463,8 +463,8 @@ fn a_master_change_resends_the_pending_proposals_in_order() {
 
 // --- Large content: the preview before the confirmation (SIGNAL.md, bulk channel) ---
 
-use craft_signal::Attachment;
-use craft_signal::blobs::{self, MAX_PREVIEW_BYTES, PART_BYTES};
+use craft_opencore::signal::Attachment;
+use craft_opencore::signal::blobs::{self, MAX_PREVIEW_BYTES, PART_BYTES};
 
 /// Bring the bulk channel of a joined session up.
 fn bulk_ready(s: &mut Session, transport: &RecordingTransport) {
@@ -546,7 +546,7 @@ fn a_confirmed_command_gets_its_content_back_from_the_blob() {
 
 #[test]
 fn with_content_still_on_its_way_saving_needs_a_second_yes_and_a_copy_says_what_is_missing() {
-    use craft_edms::{Client as EdmsClient, RecordingTransport as EdmsTransport};
+    use craft_opencore::edms::{Client as EdmsClient, RecordingTransport as EdmsTransport};
     let (mut s, transport) = session();
     let edms = EdmsTransport::default();
     s.edms.install(Box::new(EdmsClient::new(edms.clone())));
@@ -619,7 +619,7 @@ fn a_big_picture_goes_out_with_its_size_and_format_so_the_others_can_frame_it() 
     let op: OpPayload = wire::decode(&sent[0].payload).unwrap();
     assert!(op.params.get("data").is_none());
     let attachment = &op.attachments[0];
-    assert_eq!(attachment.kind(), craft_signal::PreviewKind::Generic);
+    assert_eq!(attachment.kind(), craft_opencore::signal::PreviewKind::Generic);
     assert_eq!((attachment.width, attachment.height, attachment.preview_type.as_str()), (240, 160, "image/png"));
     assert_eq!(attachment.hash, blobs::hash_of(picture.as_bytes()));
     assert_eq!(transport.take_bulk_sent().last().map(|f| f.kind), Some(FrameType::BlobDone), "the picture itself is on its way");
@@ -812,7 +812,7 @@ fn the_master_answers_a_sync_request_with_the_document_as_it_is_now() {
 
     let sent = transport.take_sent();
     assert_eq!((sent.len(), sent[0].kind, sent[0].sender, sent[0].seq), (1, FrameType::Sync, 3, 1), "to the one who asked, up to the last commit");
-    let payload: craft_signal::SyncPayload = wire::decode(&sent[0].payload).unwrap();
+    let payload: craft_opencore::signal::SyncPayload = wire::decode(&sent[0].payload).unwrap();
     assert_eq!(payload.format, "docx");
     // The blob on the bulk channel is that document.
     let mut state = Vec::new();
@@ -905,7 +905,7 @@ fn the_bytes_of_the_state_are_asked_for_when_they_do_not_come_and_the_master_doe
     joined_waiting_for_the_state(&mut s, &transport, 2, 1, 1, 0);
     bulk_ready(&mut s, &transport);
     let state = crate::cmd::edms::copy_bytes(&s, "state.docx").unwrap();
-    let payload = craft_signal::SyncPayload { format: "docx".into(), state: Attachment::whole("state", &state) };
+    let payload = craft_opencore::signal::SyncPayload { format: "docx".into(), state: Attachment::whole("state", &state) };
     let mut answer = Frame::new(FrameType::Sync).with_payload(wire::encode(&payload).unwrap());
     answer.session = 1;
     answer.sender = 2;
@@ -927,7 +927,7 @@ fn the_bytes_of_the_state_are_asked_for_when_they_do_not_come_and_the_master_doe
 /// A session connected to an EDMS, with a document opened from there (it has its id there), and a
 /// collaboration transport that has not joined anything yet.
 fn opened_from_the_edms() -> (Session, RecordingTransport) {
-    use craft_edms::{Client as EdmsClient, HttpResponse, RecordingTransport as EdmsTransport};
+    use craft_opencore::edms::{Client as EdmsClient, HttpResponse, RecordingTransport as EdmsTransport};
     let (mut s, transport) = session();
     let edms = EdmsTransport::default();
     s.edms.install(Box::new(EdmsClient::new(edms.clone())));
@@ -979,8 +979,8 @@ fn joining_by_itself_can_be_switched_off_and_needs_a_document_from_the_edms() {
 
 /// A document opened from the EDMS, in a session as participant `id` (master `master`), joined and
 /// up to date, without the automatic join getting in the way. The EDMS transport comes back too.
-fn in_session_from_the_edms(id: u16, master: u16) -> (Session, RecordingTransport, craft_edms::RecordingTransport) {
-    use craft_edms::{Client as EdmsClient, HttpResponse, RecordingTransport as EdmsTransport};
+fn in_session_from_the_edms(id: u16, master: u16) -> (Session, RecordingTransport, craft_opencore::edms::RecordingTransport) {
+    use craft_opencore::edms::{Client as EdmsClient, HttpResponse, RecordingTransport as EdmsTransport};
     let (mut s, transport) = session();
     let edms = EdmsTransport::default();
     s.edms.install(Box::new(EdmsClient::new(edms.clone())));
@@ -1003,8 +1003,8 @@ fn in_session_from_the_edms(id: u16, master: u16) -> (Session, RecordingTranspor
     (s, transport, edms)
 }
 
-fn puts(edms: &craft_edms::RecordingTransport) -> usize {
-    edms.started().iter().filter(|(_, request)| request.method == craft_edms::Method::Put).count()
+fn puts(edms: &craft_opencore::edms::RecordingTransport) -> usize {
+    edms.started().iter().filter(|(_, request)| request.method == craft_opencore::edms::Method::Put).count()
 }
 
 #[test]
@@ -1032,7 +1032,7 @@ fn a_participant_asks_the_master_to_save_and_takes_the_version_it_reports() {
         .unwrap();
     assert_eq!(event["advice"], json!("none"), "{event}");
 
-    let saved = craft_signal::SavedPayload { etag: "\"e9\"".into(), by: 2, local: sent[0].local };
+    let saved = craft_opencore::signal::SavedPayload { etag: "\"e9\"".into(), by: 2, local: sent[0].local };
     let mut frame = Frame::new(FrameType::Saved).with_payload(wire::encode(&saved).unwrap());
     frame.session = 1;
     frame.sender = 1;
@@ -1070,7 +1070,7 @@ fn a_save_request_nobody_answers_is_reported_and_a_refusal_too() {
 
 #[test]
 fn the_master_saves_for_a_participant_and_tells_everyone_the_version() {
-    use craft_edms::HttpResponse;
+    use craft_opencore::edms::HttpResponse;
     let (mut s, transport, edms) = in_session_from_the_edms(1, 1);
     s.run("text.insert", &json!({"text": "Vom Master"})).unwrap();
     transport.take_sent();
@@ -1082,12 +1082,12 @@ fn the_master_saves_for_a_participant_and_tells_everyone_the_version() {
     transport.deliver(asking);
     s.signal_pump();
     let (put, request) = edms.last_started().unwrap();
-    assert_eq!(request.method, craft_edms::Method::Put, "the master writes");
+    assert_eq!(request.method, craft_opencore::edms::Method::Put, "the master writes");
     edms.answer(put, HttpResponse::new(204).with_header("ETag", "\"e5\"").with_header("OC-FileId", "storage$space!item"));
     s.edms_pump();
     let sent = transport.take_sent();
     let saved = sent.iter().find(|frame| frame.kind == FrameType::Saved).expect("SAVED");
-    let payload: craft_signal::SavedPayload = wire::decode(&saved.payload).unwrap();
+    let payload: craft_opencore::signal::SavedPayload = wire::decode(&saved.payload).unwrap();
     assert_eq!((payload.etag.as_str(), payload.by, payload.local, saved.seq), ("\"e5\"", 3, 4, 1));
 
     // Its own save is announced as well (for nobody in particular).
@@ -1098,7 +1098,7 @@ fn the_master_saves_for_a_participant_and_tells_everyone_the_version() {
     edms.answer(own, HttpResponse::new(204).with_header("ETag", "\"e6\""));
     s.edms_pump();
     let own_saved = transport.take_sent().into_iter().find(|frame| frame.kind == FrameType::Saved).expect("SAVED");
-    let payload: craft_signal::SavedPayload = wire::decode(&own_saved.payload).unwrap();
+    let payload: craft_opencore::signal::SavedPayload = wire::decode(&own_saved.payload).unwrap();
     assert_eq!((payload.etag.as_str(), payload.by), ("\"e6\"", 0));
 }
 

@@ -25,10 +25,8 @@ log = { workspace = true }
 serde_json = { workspace = true }
 wordcraft-doc = { workspace = true }
 wordcraft-fonts = { workspace = true }
-# kosmos: the EDMS module (opencraft), driven over the browser's fetch.
-craft-edms = { workspace = true }
-# kosmos: Craft Signal (opencraft), over the browser's WebSocket.
-craft-signal = { workspace = true }
+# kosmos: the OpenCore kit (opencraft): EDMS over the browser's fetch, Craft Signal over its WebSocket.
+craft-opencore = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `wgpu` pulls egui-wgpu's defaults: WebGPU plus the WebGL2 fallback.

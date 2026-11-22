@@ -3,8 +3,8 @@
 //! then on every edit is proposed, the master's commits are applied each frame
 //! (`Session::signal_pump`, or `signal.poll` on demand).
 
-use craft_signal::ConnectRequest;
-use craft_signal::wire::Mode;
+use craft_opencore::signal::ConnectRequest;
+use craft_opencore::signal::wire::Mode;
 use serde_json::{Value, json};
 
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
@@ -97,6 +97,6 @@ fn saved(s: &mut Session, v: &Value) -> CmdResult {
     let etag = p::str(v, "etag").unwrap_or_default().to_string();
     let port = s.signal.port_mut()?;
     let seq = port.seq();
-    port.saved(seq, &craft_signal::SavedPayload { etag, by: 0, local: 0 }).map_err(|e| CmdError::Failed(e.to_string()))?;
+    port.saved(seq, &craft_opencore::signal::SavedPayload { etag, by: 0, local: 0 }).map_err(|e| CmdError::Failed(e.to_string()))?;
     Ok(json!({"seq": seq}))
 }

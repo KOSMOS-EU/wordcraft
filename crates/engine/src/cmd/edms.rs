@@ -3,8 +3,8 @@
 //! answers `{pending: id}`; the outcome arrives through `edms.poll` (or the front end's frame,
 //! `Session::edms_pump`). See `opencraft/EDMS_NATIVE.md` §9.
 
-use craft_edms::events::RemoteEvent;
-use craft_edms::{Config, EdmsError, Location, Lookup, Request};
+use craft_opencore::edms::events::RemoteEvent;
+use craft_opencore::edms::{Config, EdmsError, Location, Lookup, Request};
 use serde_json::{Value, json};
 
 use crate::edms::{Action, advice_name, error_json};
@@ -139,7 +139,7 @@ fn drives(s: &mut Session, _v: &Value) -> CmdResult {
 fn drive_and_path(v: &Value) -> Result<(String, String), CmdError> {
     let drive_id = require(v, "drive")?;
     let path = p::str(v, "path").map(str::trim).filter(|s| !s.is_empty()).unwrap_or("/");
-    Ok((drive_id, craft_edms::location::normalize_path(path)))
+    Ok((drive_id, craft_opencore::edms::location::normalize_path(path)))
 }
 
 fn list(s: &mut Session, v: &Value) -> CmdResult {
@@ -161,7 +161,7 @@ fn search(s: &mut Session, v: &Value) -> CmdResult {
 fn open(s: &mut Session, v: &Value) -> CmdResult {
     let (drive_id, path) = drive_and_path(v)?;
     let name = Location::new(&drive_id, &path).name().to_string();
-    if !craft_edms::location::valid_name(&name) {
+    if !craft_opencore::edms::location::valid_name(&name) {
         return Err(CmdError::Params("`path` must name a file".into()));
     }
     pending(s, Request::Get { drive_id, path }, Action::Open { name })
@@ -170,7 +170,7 @@ fn open(s: &mut Session, v: &Value) -> CmdResult {
 fn fetch(s: &mut Session, v: &Value) -> CmdResult {
     let (drive_id, path) = drive_and_path(v)?;
     let name = Location::new(&drive_id, &path).name().to_string();
-    if !craft_edms::location::valid_name(&name) {
+    if !craft_opencore::edms::location::valid_name(&name) {
         return Err(CmdError::Params("`path` must name a file".into()));
     }
     pending(s, Request::Get { drive_id, path }, Action::Fetch { name })
@@ -229,13 +229,13 @@ fn adopt(s: &mut Session, v: &Value) -> CmdResult {
     let (drive_id, path) = drive_and_path(v)?;
     let mut location = Location::new(&drive_id, &path);
     let name = location.name().to_string();
-    if !craft_edms::location::valid_name(&name) {
+    if !craft_opencore::edms::location::valid_name(&name) {
         return Err(CmdError::Params("`path` must name a file".into()));
     }
     location.item_id = p::str(v, "id").map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     location.etag = p::str(v, "etag").map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     if let Some(letters) = p::str(v, "permissions") {
-        location.permissions = craft_edms::Permissions::from_letters(letters);
+        location.permissions = craft_opencore::edms::Permissions::from_letters(letters);
     }
     let id = s.document_id();
     s.edms.adopt(id, location, name.clone());
@@ -247,7 +247,7 @@ fn adopt(s: &mut Session, v: &Value) -> CmdResult {
 /// The document's bytes in the format its name says, with the save stamps applied (modified,
 /// revision). Mirrors `file.save` without the file system.
 fn document_bytes(s: &mut Session, name: &str) -> Result<Vec<u8>, CmdError> {
-    if !craft_edms::location::valid_name(name) {
+    if !craft_opencore::edms::location::valid_name(name) {
         return Err(CmdError::Params(format!("invalid file name: {name:?}")));
     }
     s.stamp_save();
@@ -259,7 +259,7 @@ fn document_bytes(s: &mut Session, name: &str) -> Result<Vec<u8>, CmdError> {
 
 /// A copy's bytes: no stamps, the document is unchanged (export).
 pub(crate) fn copy_bytes(s: &Session, name: &str) -> Result<Vec<u8>, CmdError> {
-    if !craft_edms::location::valid_name(name) {
+    if !craft_opencore::edms::location::valid_name(name) {
         return Err(CmdError::Params(format!("invalid file name: {name:?}")));
     }
     let opts = super::file::export_options(s, &Value::Null);
@@ -305,7 +305,7 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
 fn target(v: &Value) -> Result<(Location, String, bool), CmdError> {
     let (drive_id, folder) = drive_and_path(v)?;
     let name = require(v, "name")?;
-    if !craft_edms::location::valid_name(&name) {
+    if !craft_opencore::edms::location::valid_name(&name) {
         return Err(CmdError::Params(format!("invalid file name: {name:?}")));
     }
     let overwrite = p::bool(v, "overwrite").unwrap_or(false);
@@ -382,10 +382,10 @@ fn event(s: &mut Session, v: &Value) -> CmdResult {
     } else if remote.kind.is_gone() {
         doc.tracker.gone()
     } else {
-        craft_edms::change::Advice::Nothing
+        craft_opencore::edms::change::Advice::Nothing
     };
     let name = advice_name(advice);
-    if advice != craft_edms::change::Advice::Nothing {
+    if advice != craft_opencore::edms::change::Advice::Nothing {
         s.push_ui_request(json!({"edms": {"advice": name, "reason": kind, "document": id}}));
     }
     Ok(json!({"concerns": true, "foreign": true, "advice": name, "kind": kind}))

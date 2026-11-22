@@ -847,12 +847,12 @@ fn icon_button(ui: &mut Ui, t: &Tokens, icon: &str, tip: &str, enabled: bool) ->
 mod tests {
     use super::*;
     use crate::Services;
-    use craft_edms::{Client, HttpResponse, Method, RecordingTransport};
+    use craft_opencore::edms::{Client, HttpResponse, Method, RecordingTransport};
     use wordcraft_engine::Session;
 
     const DRIVE: &str = "b894e89e-a7fd-4385-92fc-b5e0bb2659fd$8c9cde70-836d-4eda-81bf-99102e838af1";
-    const DRIVES: &[u8] = include_bytes!("../../../../opencraft/crates/craft-edms/tests/fixtures/xwork/drives.json");
-    const ROOT: &[u8] = include_bytes!("../../../../opencraft/crates/craft-edms/tests/fixtures/xwork/propfind_root_depth1.xml");
+    const DRIVES: &[u8] = include_bytes!("../../../../opencraft/crates/craft-opencore/tests/fixtures/xwork/drives.json");
+    const ROOT: &[u8] = include_bytes!("../../../../opencraft/crates/craft-opencore/tests/fixtures/xwork/propfind_root_depth1.xml");
 
     /// An app whose EDMS is connected through a recording transport (nothing touches the network).
     fn connected() -> (WordApp, RecordingTransport) {
