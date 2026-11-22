@@ -59,6 +59,7 @@ dem Herauslösen (Plan, Stufe 0): unter 400 Zeilen.
 | Ortswähler mit festen Maßen | passte nicht in kleine Fenster | Oberfläche des Plugins an die Fläche binden |
 | Teilnehmer wartet auf den Stand eines Masters, der nie antwortet | Bearbeiten wäre für immer gesperrt gewesen | jede Wartestelle braucht eine Frist und einen Weg zurück |
 | Bild-Bytes als base64 im Befehl | Grenze des Steuerkanals, doppelter Speicher | Bytes als Bytes, nicht durch JSON |
+| Zeitstempel `t` pauschal an alle Anfragen (Cache-Fix) | Graph-API lehnte ab (400), „Speichern unter“ ging nicht | Parameter nur, wo der Server sie annimmt; jede Fremd-API im Browser-Test |
 | Tests liefen nur lokal, der Worker baut nur | ein roter Stand wäre ausgeliefert worden | Tests in den Worker-Job |
 
 ## 5. Was dem Plugin fehlt (aus dieser App gelernt)
