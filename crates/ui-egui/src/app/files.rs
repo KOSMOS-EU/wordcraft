@@ -553,6 +553,12 @@ impl WordApp {
             "closed" => {
                 crate::i18n::fmt(tl!("Collaboration ended: {reason}"), &[("reason", signal.get("reason").and_then(Value::as_str).unwrap_or(""))])
             }
+            // Who joins later takes the master's document in the place of its own.
+            "synced" => tl!("Collaboration: the document is up to date with the session").to_string(),
+            "syncFailed" => crate::i18n::fmt(
+                tl!("Collaboration: the session's document did not come ({reason}); going on with this one"),
+                &[("reason", signal.get("reason").and_then(Value::as_str).unwrap_or(""))],
+            ),
             // A big picture counts at once; until its bytes are here it is shown as a frame.
             "framed" => tl!("Collaboration: a picture is still on its way, its frame holds the place").to_string(),
             "blobComplete" if signal.get("replaced").and_then(Value::as_u64).unwrap_or(0) > 0 => {

@@ -81,6 +81,11 @@ impl Session {
             return Err(CmdError::Disabled(format!("{id}: {why}")));
         }
         // Restrict Editing: refused outright, or allowed as long as it only edits the exceptions.
+        // kosmos: a participant that just joined a collaboration waits for the master's document,
+        // which takes the place of this one. An edit now would be lost with it.
+        if spec.mutates && self.signal.syncing() && !self.signal.applying() {
+            return Err(CmdError::Disabled("the document is being brought up to date with the collaboration".into()));
+        }
         let guard = if spec.mutates { crate::cmd::protect::check_before(self, id, params)? } else { false };
         // Quick Parts aren't part of the document, so a refused edit puts them back itself (the Spike).
         let blocks_before = guard.then(|| self.building_blocks.clone());

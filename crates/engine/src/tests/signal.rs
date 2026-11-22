@@ -16,8 +16,36 @@ fn session() -> (Session, RecordingTransport) {
     (s, transport)
 }
 
-/// Connect and play the relay's answers until the session is in: `id`, `rank` 0 = master.
+/// Connect and play the relay's answers until the session is in: `id`, `rank` 0 = master. Who
+/// joins a session someone else leads asks for the master's document first; here the master
+/// has the same document, and its answer is played in ([`joined_waiting_for_the_state`] stops
+/// before that).
 fn joined(s: &mut Session, transport: &RecordingTransport, id: u16, rank: u16, master: u16, seq: u32) {
+    joined_waiting_for_the_state(s, transport, id, rank, master, seq);
+    if id != master {
+        let state = crate::cmd::edms::copy_bytes(s, "state.docx").unwrap();
+        answer_with_state(s, transport, id, seq, &state);
+        s.signal.take_log();
+        s.ui_requests.clear();
+    }
+    let status = s.run("signal.status", &json!({})).unwrap();
+    assert_eq!((status["state"].as_str(), status["syncing"].as_bool()), (Some("joined"), Some(false)), "{status}");
+}
+
+/// The master's answer to the sync request of `id`: the state on the bulk channel, the `SYNC`
+/// naming it on the control channel.
+fn answer_with_state(s: &mut Session, transport: &RecordingTransport, id: u16, seq: u32, state: &[u8]) {
+    deliver_blob(transport, state);
+    let payload = craft_signal::SyncPayload { format: "docx".into(), state: Attachment::whole("state", state) };
+    let mut answer = Frame::new(FrameType::Sync).with_payload(wire::encode(&payload).unwrap());
+    answer.session = 1;
+    answer.sender = id;
+    answer.seq = seq;
+    transport.deliver(answer);
+    s.signal_pump();
+}
+
+fn joined_waiting_for_the_state(s: &mut Session, transport: &RecordingTransport, id: u16, rank: u16, master: u16, seq: u32) {
     s.run("signal.connect", &json!({"relay": "http://127.0.0.1:8787", "doc": "space!file", "auth": "Bearer anna", "user": "Anna"})).unwrap();
     transport.push(Event::Ticket(Ok(r#"{"ticket":"t1","maxMode":1}"#.into())));
     s.signal_pump();
@@ -38,9 +66,12 @@ fn joined(s: &mut Session, transport: &RecordingTransport, id: u16, rank: u16, m
     frame.seq = seq;
     transport.deliver(frame);
     s.signal_pump();
-    transport.take_sent();
-    let status = s.run("signal.status", &json!({})).unwrap();
-    assert_eq!(status["state"], json!("joined"), "{status}");
+    let sent = transport.take_sent();
+    assert_eq!(
+        sent.iter().filter(|frame| frame.kind == FrameType::SyncReq).count(),
+        usize::from(id != master),
+        "only who joins someone else's session asks for its state"
+    );
 }
 
 fn text(s: &Session) -> String {
@@ -804,4 +835,89 @@ fn the_master_answers_a_sync_request_with_the_document_as_it_is_now() {
     their_transport.deliver(stray);
     other.signal_pump();
     assert!(their_transport.take_sent().is_empty());
+}
+
+#[test]
+fn who_joins_later_takes_the_masters_document_and_what_was_confirmed_meanwhile() {
+    // The master's document, ahead of the file both opened.
+    let mut master = Session::new(blank_document(&wordcraft_geom::Region::default()));
+    master.run("text.insert", &json!({"text": "Vom Master. "})).unwrap();
+    let state = crate::cmd::edms::copy_bytes(&master, "state.docx").unwrap();
+
+    let (mut s, transport) = session();
+    s.run("text.insert", &json!({"text": "Lokaler Stand"})).unwrap();
+    joined_waiting_for_the_state(&mut s, &transport, 2, 1, 1, 4);
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["syncing"], json!(true));
+
+    // Until the state is here nothing is edited and nothing confirmed is applied.
+    let refused = s.run("text.insert", &json!({"text": "x"})).unwrap_err().to_string();
+    assert!(refused.contains("brought up to date"), "{refused}");
+    let already_in_the_state = OpPayload { command: "text.insert".into(), params: json!({"text": "ALT"}), ..OpPayload::default() };
+    let after_the_state = OpPayload {
+        command: "text.insert".into(),
+        params: json!({"text": "Danach."}),
+        anchor: serde_json::to_value(&master.sel).unwrap(),
+        ..OpPayload::default()
+    };
+    transport.deliver(commit_frame(1, 1, 4, &already_in_the_state));
+    transport.deliver(commit_frame(1, 2, 5, &after_the_state));
+    s.signal_pump();
+    assert_eq!(text(&s), "Lokaler Stand");
+    assert!(transport.take_sent().is_empty(), "nothing went out");
+
+    answer_with_state(&mut s, &transport, 2, 4, &state);
+    assert_eq!(text(&s), "Vom Master. Danach.", "the state, then only what came after it");
+    let status = s.run("signal.status", &json!({})).unwrap();
+    assert_eq!((status["syncing"].as_bool(), status["applied"].as_u64()), (Some(false), Some(1)));
+    assert!(s.ui_requests.iter().any(|r| r["signal"]["event"] == "synced" && r["signal"]["seq"] == 4 && r["signal"]["replayed"] == 1));
+    // Editing works again, and no undo step brings the replaced document back.
+    s.run("text.insert", &json!({"text": "!"})).unwrap();
+    assert_eq!(transport.take_sent().iter().map(|f| f.kind).collect::<Vec<_>>(), [FrameType::Op]);
+    for _ in 0..4 {
+        let _ = s.run("edit.undo", &json!({}));
+        assert!(!text(&s).contains("Lokaler Stand"), "{}", text(&s));
+    }
+}
+
+#[test]
+fn a_master_that_never_answers_does_not_hold_the_participant_forever() {
+    let (mut s, transport) = session();
+    joined_waiting_for_the_state(&mut s, &transport, 2, 1, 1, 3);
+    let confirmed = OpPayload { command: "text.insert".into(), params: json!({"text": "Bestätigt"}), ..OpPayload::default() };
+    transport.deliver(commit_frame(1, 1, 4, &confirmed));
+    s.signal_pump();
+    assert_eq!(text(&s), "");
+
+    s.signal_sync_step_at(crate::signal::now_ms() + 5_000);
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["syncing"], json!(true), "still within the wait");
+    s.signal_sync_step_at(crate::signal::now_ms() + 11_000);
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["syncing"], json!(false));
+    assert_eq!(text(&s), "Bestätigt", "it goes on with its document and what was confirmed");
+    assert!(s.ui_requests.iter().any(|r| r["signal"]["event"] == "syncFailed"));
+    s.run("text.insert", &json!({"text": "!"})).unwrap();
+}
+
+#[test]
+fn the_bytes_of_the_state_are_asked_for_when_they_do_not_come_and_the_master_does_not_ask_itself() {
+    let (mut s, transport) = session();
+    joined_waiting_for_the_state(&mut s, &transport, 2, 1, 1, 0);
+    bulk_ready(&mut s, &transport);
+    let state = crate::cmd::edms::copy_bytes(&s, "state.docx").unwrap();
+    let payload = craft_signal::SyncPayload { format: "docx".into(), state: Attachment::whole("state", &state) };
+    let mut answer = Frame::new(FrameType::Sync).with_payload(wire::encode(&payload).unwrap());
+    answer.session = 1;
+    answer.sender = 2;
+    transport.deliver(answer);
+    s.signal_pump();
+    assert!(transport.take_bulk_sent().is_empty(), "the bytes usually come by themselves");
+    s.signal_sync_step_at(crate::signal::now_ms() + 3_000);
+    let asked = transport.take_bulk_sent();
+    assert_eq!((asked.len(), asked[0].kind, asked[0].payload.as_slice()), (1, FrameType::BlobReq, &blobs::hash_of(&state)[..]));
+    s.signal_sync_step_at(crate::signal::now_ms() + 4_000);
+    assert!(transport.take_bulk_sent().is_empty(), "asked once");
+
+    // The first of a session is its master: nobody to ask.
+    let (mut first, their_transport) = session();
+    joined_waiting_for_the_state(&mut first, &their_transport, 1, 0, 1, 0);
+    assert_eq!(first.run("signal.status", &json!({})).unwrap()["syncing"], json!(false));
 }

@@ -187,6 +187,15 @@ impl EdmsState {
         self.sidecars.refresh(id, self.documents.get(&id).map(|d| &d.location), relative)
     }
 
+    /// The content of document `from` was replaced and it is `to` now (a collaborator took the
+    /// master's state): where it lives moves along, what was fetched beside the old content goes.
+    pub(crate) fn follow_replaced(&mut self, from: u64, to: u64) {
+        if let Some(lived_at) = self.documents.remove(&from) {
+            self.documents.insert(to, lived_at);
+        }
+        self.forget_sidecars(from);
+    }
+
     /// A session document was closed or replaced: its sidecars go.
     pub fn forget_sidecars(&mut self, id: u64) {
         self.sidecars.forget_document(id);

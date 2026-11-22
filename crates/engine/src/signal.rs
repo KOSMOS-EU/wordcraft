@@ -45,6 +45,16 @@ const MASTER_CHANGED: &str = "master changed";
 /// and travels as a blob on the bulk channel (SIGNAL.md, "Vorschau vor Bestätigung").
 const MIN_DETACHED_BYTES: usize = 256;
 
+/// How long a participant waits for the master's answer to its sync request, and then for the
+/// bytes of the state, before it goes on with the document it has (a master that never answers).
+const SYNC_ANSWER_MS: u64 = 10_000;
+const SYNC_BYTES_MS: u64 = 60_000;
+/// After this long without the bytes of a named state they are asked for (they were already in
+/// the relay's buffer, so nobody sent them again).
+const SYNC_ASK_BYTES_MS: u64 = 2_000;
+/// Most commits kept while the state is on its way; more than that and the wait is given up.
+const MAX_SYNC_COMMITS: usize = 4096;
+
 /// The state a master answers a sync request with: the document as a `.docx` copy.
 const SYNC_STATE_FORMAT: &str = "docx";
 const SYNC_STATE_NAME: &str = "state.docx";
@@ -108,6 +118,24 @@ struct Derived {
     edit: PictureEdit,
 }
 
+/// A participant bringing its document up to date with the session it joined: it asked the
+/// master for the state and keeps what is confirmed meanwhile, to apply it on top.
+struct Syncing {
+    asked_ms: u64,
+    /// The state the master named, once its `SYNC` is here.
+    state: Option<NamedState>,
+    /// Commits that came meanwhile, in order.
+    commits: Vec<(u32, u16, u32, OpPayload)>,
+}
+
+struct NamedState {
+    hash: Hash,
+    /// The last commit the state includes.
+    seq: u32,
+    named_ms: u64,
+    bytes_asked: bool,
+}
+
 /// A frame `attached` put into a command's parameters, before the command ran.
 struct FramedParameter {
     hash: Hash,
@@ -130,6 +158,8 @@ pub struct SignalState {
     frames: Vec<Frame>,
     /// What Picture Format made of those frames.
     derived: Vec<Derived>,
+    /// Set while this participant waits for the master's state after joining.
+    syncing: Option<Syncing>,
     /// Proposals a master change sent again; their `NAK`s are expected and not errors.
     resent_locals: HashSet<u32>,
     pub applied: u64,
@@ -188,6 +218,12 @@ impl SignalState {
     /// Picture Format made `media` from `base` while `base` stood in for a picture.
     pub(crate) fn note_derived(&mut self, base: &str, base_bytes: Arc<Vec<u8>>, media: &str, bytes: Arc<Vec<u8>>, edit: PictureEdit) {
         self.derived.push(Derived { base: base.to_string(), base_bytes, media: media.to_string(), bytes, edit });
+    }
+
+    /// Whether the document is waiting for the master's state: it is about to be replaced, so it
+    /// can't be edited.
+    pub fn syncing(&self) -> bool {
+        self.syncing.is_some()
     }
 
     /// How many pictures in the document are shown as their frame.
@@ -295,6 +331,7 @@ impl SignalState {
         status["journal"] = json!(self.journal.len());
         status["traces"] = json!(self.traces.len());
         status["framed"] = json!(self.framed());
+        status["syncing"] = json!(self.syncing());
         status
     }
 
@@ -479,6 +516,96 @@ impl Session {
         for item in incoming {
             self.signal_apply(item);
         }
+        self.signal_sync_step_at(now_ms());
+    }
+
+    /// Ask the master for its document and wait for it: until it is here nothing is applied or
+    /// edited ([`SignalState::syncing`]).
+    fn signal_request_state(&mut self, seq: u32) {
+        let asked = match self.signal.port.as_mut() {
+            Some(port) => port.request_sync(seq).map_err(|e| e.to_string()),
+            None => Err("no Craft Signal transport".into()),
+        };
+        match asked {
+            Ok(()) => {
+                self.signal.syncing = Some(Syncing { asked_ms: now_ms(), state: None, commits: Vec::new() });
+                self.signal.note(json!({"event": "syncing", "seq": seq}));
+            }
+            Err(e) => self.signal.note(json!({"event": "error", "message": format!("the master's state could not be asked for: {e}")})),
+        }
+    }
+
+    /// Go on with the document that is here: the state did not come. What was confirmed meanwhile
+    /// is applied to it, as before there was a state to ask for.
+    fn signal_give_up_state(&mut self, reason: &str) {
+        let Some(syncing) = self.signal.syncing.take() else { return };
+        let entry = json!({"event": "syncFailed", "reason": reason, "commits": syncing.commits.len()});
+        self.signal.note(entry.clone());
+        self.push_ui_request(json!({"signal": entry}));
+        for (seq, sender, local, op) in syncing.commits {
+            self.signal_apply(Incoming::Commit { seq, sender, local, op });
+        }
+    }
+
+    /// One step of bringing the document up to date: take the state when its bytes are here, ask
+    /// for them when they don't come by themselves, give up when nothing comes at all.
+    pub(crate) fn signal_sync_step_at(&mut self, now: u64) {
+        let Some(syncing) = self.signal.syncing.as_mut() else { return };
+        let Some(state) = syncing.state.as_mut() else {
+            if now.saturating_sub(syncing.asked_ms) > SYNC_ANSWER_MS {
+                self.signal_give_up_state("the master did not answer");
+            }
+            return;
+        };
+        let (hash, state_seq, waited_ms) = (state.hash, state.seq, now.saturating_sub(state.named_ms));
+        let bytes = self.signal.port.as_ref().and_then(|port| port.blob(&hash)).map(<[u8]>::to_vec);
+        let Some(bytes) = bytes else {
+            if waited_ms > SYNC_BYTES_MS {
+                self.signal_give_up_state("the bytes of the master's state did not come");
+            } else if waited_ms > SYNC_ASK_BYTES_MS && !state.bytes_asked {
+                state.bytes_asked = true;
+                if let Some(port) = self.signal.port.as_mut() {
+                    let _ = port.request(&hash);
+                }
+            }
+            return;
+        };
+        if let Err(e) = self.signal_adopt_state(&bytes) {
+            self.signal_give_up_state(&format!("the master's state can't be opened: {e}"));
+            return;
+        }
+        let commits = self.signal.syncing.take().map(|syncing| syncing.commits).unwrap_or_default();
+        let mut replayed = 0usize;
+        for (seq, sender, local, op) in commits {
+            // The state already holds what was confirmed up to its `seq`.
+            if seq > state_seq {
+                self.signal_apply(Incoming::Commit { seq, sender, local, op });
+                replayed += 1;
+            }
+        }
+        let entry = json!({"event": "synced", "seq": state_seq, "size": bytes.len(), "replayed": replayed});
+        self.signal.note(entry.clone());
+        self.push_ui_request(json!({"signal": entry}));
+    }
+
+    /// Put the master's document in the place of the one open here. Where it lives (its EDMS
+    /// entry, its name) stays: only the content is the session's.
+    fn signal_adopt_state(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let (doc, _encrypted) = crate::io::open_bytes_in(SYNC_STATE_NAME, bytes, None, &self.region())?;
+        let old_id = self.document_id();
+        let (file_name, path, password) = (self.file_name.clone(), self.path.clone(), self.password.clone());
+        self.signal.frames.clear();
+        self.signal.derived.clear();
+        self.set_document(doc);
+        self.file_name = file_name;
+        self.path = path;
+        self.password = password;
+        let new_id = self.document_id();
+        self.edms.follow_replaced(old_id, new_id);
+        if let Some(zoom) = self.doc.settings.zoom {
+            crate::cmd::view::restore_zoom(self, zoom);
+        }
+        Ok(())
     }
 
     fn signal_apply(&mut self, item: Incoming) {
@@ -490,6 +617,12 @@ impl Session {
                 let entry = json!({"event": "joined", "session": session, "id": id, "mode": mode.name(), "rank": if rank == craft_signal::wire::NO_RANK { Value::Null } else { json!(rank) }, "master": master, "seq": seq, "reason": reason});
                 self.signal.note(entry.clone());
                 self.push_ui_request(json!({"signal": entry}));
+                // Joining a session someone else leads: its document is the master's, not the
+                // one opened here (the master may be ahead of the file, saved or not).
+                self.signal.syncing = None;
+                if master != 0 && master != id {
+                    self.signal_request_state(seq);
+                }
             }
             Incoming::ModeGranted { mode, reason } => {
                 let entry = json!({"event": "mode", "mode": mode.name(), "reason": reason});
@@ -504,10 +637,34 @@ impl Session {
                 // The new master has never seen what was unconfirmed: take it back and send it
                 // again, on the state the whole session agrees on.
                 self.signal.traces.clear();
+                if self.signal.syncing.is_some() {
+                    // The one who was asked is gone. Another master is asked again; as the master
+                    // itself this document is the session's now.
+                    if me {
+                        self.signal_give_up_state("this participant became the master before the state came");
+                    } else {
+                        let seq = self.signal.port.as_ref().map_or(0, |port| port.seq());
+                        let kept = self.signal.syncing.take().map(|syncing| syncing.commits).unwrap_or_default();
+                        self.signal_request_state(seq);
+                        if let Some(syncing) = self.signal.syncing.as_mut() {
+                            syncing.commits = kept;
+                        }
+                    }
+                }
                 let resent = self.signal_resend_pending();
                 let entry = json!({"event": "master", "master": master, "me": me, "lock": !lock.is_empty(), "resent": resent});
                 self.signal.note(entry.clone());
                 self.push_ui_request(json!({"signal": entry}));
+            }
+            Incoming::Commit { seq, sender, local, op } if self.signal.syncing.is_some() => {
+                // On top of the state that is on its way, not of the document that is replaced.
+                let kept = self.signal.syncing.as_mut().map_or(0, |syncing| {
+                    syncing.commits.push((seq, sender, local, op));
+                    syncing.commits.len()
+                });
+                if kept > MAX_SYNC_COMMITS {
+                    self.signal_give_up_state("too much happened while the state was on its way");
+                }
             }
             Incoming::Commit { seq, sender, local, op } => match self.signal_run_remote(&op) {
                 Ok(()) => {
@@ -608,7 +765,18 @@ impl Session {
                 };
                 self.signal.note(entry);
             }
-            Incoming::Sync { .. } | Incoming::Presence { .. } => {}
+            Incoming::Sync { seq, payload } => {
+                let now = now_ms();
+                let Some(syncing) = self.signal.syncing.as_mut() else { return };
+                match craft_signal::wire::decode::<craft_signal::SyncPayload>(&payload) {
+                    Ok(sync) if sync.format == SYNC_STATE_FORMAT => {
+                        syncing.state = Some(NamedState { hash: sync.state.hash, seq, named_ms: now, bytes_asked: false })
+                    }
+                    Ok(sync) => self.signal_give_up_state(&format!("the master sent a state as `{}`, which this app does not read", sync.format)),
+                    Err(e) => self.signal_give_up_state(&format!("the master's state can't be read: {e}")),
+                }
+            }
+            Incoming::Presence { .. } => {}
             Incoming::Saved { seq } => {
                 self.signal.note(json!({"event": "saved", "seq": seq}));
             }
@@ -622,6 +790,7 @@ impl Session {
             Incoming::Closed { reason } => {
                 self.signal.frames.clear();
                 self.signal.derived.clear();
+                self.signal.syncing = None;
                 self.signal.journal.clear();
                 self.signal.traces.clear();
                 let entry = json!({"event": "closed", "reason": reason});
