@@ -23,6 +23,9 @@ wordcraft-fonts = { workspace = true }
 wordcraft-layout = { workspace = true }
 wordcraft-render = { workspace = true }
 wordcraft-engine = { workspace = true }
+# kosmos: the collaboration widget of the OpenCore plugin (the same in every Craft app).
+craft-signal = { workspace = true }
+craft-signal-egui = { workspace = true }
 wordcraft-zotero = { workspace = true }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_extras = { workspace = true }

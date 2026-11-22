@@ -19,6 +19,12 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("signal.connect", "Join a collaboration", SIGNAL, connect)
             .params(r#"{"relay": "http://127.0.0.1:8787" | "https://cloud.example.org", "doc": document id (space!file), "auth"?: Authorization value ("Bearer …"; default "Bearer dev"), "user"?: display name (default the author), "mode"?: "edit" | "readOnly" (default edit), "app"?: "wordcraft"} → {"connecting": true}; signal.status says when joined"#)
             .pure(),
+        CommandSpec::new("signal.join", "Join this document's collaboration", SIGNAL, join)
+            .params(r#"{} → {"connecting": true}: the collaboration of the active document at the instance it was opened from (needs `edms.connect` and a document from there)"#)
+            .pure(),
+        CommandSpec::new("signal.auto", "Join collaborations on opening", SIGNAL, auto)
+            .params(r#"{"value": bool} → {"auto": bool}: whether a document opened from the EDMS joins its collaboration by itself (default true)"#)
+            .pure(),
         CommandSpec::new("signal.disconnect", "Leave the collaboration", SIGNAL, disconnect).pure(),
         CommandSpec::new("signal.status", "Collaboration status", SIGNAL, status)
             .params(r#"{} → {"state": disconnected|ticketing|opening|greeting|joined, "id", "mode", "rank", "master", "isMaster", "seq", "pending", "members": [...], "applied", "confirmed", "rejected"}"#)
@@ -50,6 +56,17 @@ fn connect(s: &mut Session, v: &Value) -> CmdResult {
     let app = p::str(v, "app").map(str::trim).filter(|a| !a.is_empty()).unwrap_or("wordcraft").to_string();
     s.signal_connect(ConnectRequest { relay, auth, doc, app, app_version: APP_VERSION.to_string(), mode, name })?;
     Ok(json!({"connecting": true, "appVersion": APP_VERSION}))
+}
+
+fn join(s: &mut Session, _v: &Value) -> CmdResult {
+    s.signal_join()?;
+    Ok(json!({"connecting": true, "appVersion": APP_VERSION}))
+}
+
+fn auto(s: &mut Session, v: &Value) -> CmdResult {
+    let value = p::bool(v, "value").ok_or_else(|| CmdError::Params("`value` is required".into()))?;
+    s.signal.set_auto_join(value);
+    Ok(json!({"auto": value}))
 }
 
 fn disconnect(s: &mut Session, _v: &Value) -> CmdResult {

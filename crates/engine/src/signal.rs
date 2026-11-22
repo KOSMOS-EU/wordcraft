@@ -160,6 +160,11 @@ pub struct SignalState {
     derived: Vec<Derived>,
     /// Set while this participant waits for the master's state after joining.
     syncing: Option<Syncing>,
+    /// A document opened from the EDMS does not join its collaboration by itself (`signal.auto`).
+    no_auto_join: bool,
+    /// The document (its EDMS id) the automatic join was last tried for: once a document, the
+    /// person decides after that (the widget's Join and Leave).
+    auto_joined: Option<String>,
     /// Proposals a master change sent again; their `NAK`s are expected and not errors.
     resent_locals: HashSet<u32>,
     pub applied: u64,
@@ -218,6 +223,10 @@ impl SignalState {
     /// Picture Format made `media` from `base` while `base` stood in for a picture.
     pub(crate) fn note_derived(&mut self, base: &str, base_bytes: Arc<Vec<u8>>, media: &str, bytes: Arc<Vec<u8>>, edit: PictureEdit) {
         self.derived.push(Derived { base: base.to_string(), base_bytes, media: media.to_string(), bytes, edit });
+    }
+
+    pub fn set_auto_join(&mut self, on: bool) {
+        self.no_auto_join = !on;
     }
 
     /// Whether the document is waiting for the master's state: it is about to be replaced, so it
@@ -505,6 +514,7 @@ impl Session {
     /// Advance the collaboration: read what came in and apply it. The front end calls this every
     /// frame, `signal.poll` on demand.
     pub fn signal_pump(&mut self) {
+        self.signal_auto_join();
         let incoming = match self.signal.port.as_mut() {
             Some(port) => {
                 // The client has no clock: with the time it gives up on a preview that never comes.
@@ -517,6 +527,52 @@ impl Session {
             self.signal_apply(item);
         }
         self.signal_sync_step_at(now_ms());
+    }
+
+    /// Join the collaboration of the active document: at the instance it was opened from, with the
+    /// sign-in of that connection, under the document's id there. The relay decides what this user
+    /// may do (its rights on the document) and names them (the sign-in's name, not ours).
+    pub fn signal_join(&mut self) -> Result<(), CmdError> {
+        let (Some(relay), Some(auth)) = (self.edms.origin(), self.edms.authorization()) else {
+            return Err(CmdError::Disabled("not connected to an EDMS".into()));
+        };
+        let id = self.document_id();
+        let doc = self
+            .edms
+            .document(id)
+            .and_then(|document| document.location.item_id.clone())
+            .ok_or_else(|| CmdError::Disabled("this document was not opened from the EDMS".into()))?;
+        let request = ConnectRequest {
+            relay,
+            auth,
+            doc,
+            app: "wordcraft".into(),
+            app_version: crate::cmd::signal::APP_VERSION.to_string(),
+            mode: Mode::Edit,
+            name: self.author.clone(),
+        };
+        self.signal_connect(request)
+    }
+
+    /// A document opened from the EDMS joins its collaboration by itself, once: whoever opens it
+    /// while others work on it sees them and their changes without doing anything.
+    fn signal_auto_join(&mut self) {
+        if self.signal.no_auto_join || !self.edms.connected() {
+            return;
+        }
+        let idle = self.signal.port.as_ref().is_some_and(|port| port.status()["state"] == json!("disconnected"));
+        if !idle {
+            return;
+        }
+        let id = self.document_id();
+        let Some(doc) = self.edms.document(id).and_then(|document| document.location.item_id.clone()) else { return };
+        if self.signal.auto_joined.as_deref() == Some(doc.as_str()) {
+            return;
+        }
+        self.signal.auto_joined = Some(doc);
+        if let Err(e) = self.signal_join() {
+            self.signal.note(json!({"event": "error", "message": format!("the collaboration could not be joined: {e}")}));
+        }
     }
 
     /// Ask the master for its document and wait for it: until it is here nothing is applied or

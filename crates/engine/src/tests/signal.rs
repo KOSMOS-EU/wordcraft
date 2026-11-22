@@ -921,3 +921,56 @@ fn the_bytes_of_the_state_are_asked_for_when_they_do_not_come_and_the_master_doe
     joined_waiting_for_the_state(&mut first, &their_transport, 1, 0, 1, 0);
     assert_eq!(first.run("signal.status", &json!({})).unwrap()["syncing"], json!(false));
 }
+
+/// A session connected to an EDMS, with a document opened from there (it has its id there), and a
+/// collaboration transport that has not joined anything yet.
+fn opened_from_the_edms() -> (Session, RecordingTransport) {
+    use craft_edms::{Client as EdmsClient, HttpResponse, RecordingTransport as EdmsTransport};
+    let (mut s, transport) = session();
+    let edms = EdmsTransport::default();
+    s.edms.install(Box::new(EdmsClient::new(edms.clone())));
+    s.run("edms.connect", &json!({"origin": "https://cloud.xwork.cloud", "token": "tok", "initiatorId": "client-1"})).unwrap();
+    let opening = s.run("edms.open", &json!({"drive": "d1", "path": "/Bericht.docx"})).unwrap()["pending"].as_u64().unwrap();
+    let docx = crate::io::save_bytes("Bericht.docx", &crate::blank_document(&wordcraft_geom::Region::default())).unwrap();
+    edms.answer(opening, HttpResponse::new(200).with_header("ETag", "\"e1\"").with_header("OC-FileId", "storage$space!item").with_body(docx));
+    s.edms_pump();
+    (s, transport)
+}
+
+#[test]
+fn a_document_opened_from_the_edms_joins_its_collaboration_by_itself_once() {
+    let (mut s, transport) = opened_from_the_edms();
+    assert!(transport.tickets().is_empty(), "nothing before the first frame");
+    s.signal_pump();
+    let tickets = transport.tickets();
+    assert_eq!(tickets.len(), 1);
+    let (relay, auth, request) = &tickets[0];
+    assert_eq!((relay.as_str(), auth.as_str()), ("https://cloud.xwork.cloud", "Bearer tok"), "the instance and the sign-in of the document");
+    assert_eq!((request.doc.as_str(), request.app.as_str(), request.hidden), ("storage$space!item", "wordcraft", false));
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["state"], json!("ticketing"));
+
+    // No relay there (the answer is no ticket): it stays off and does not try again by itself.
+    transport.push(Event::Ticket(Ok("<!DOCTYPE html><html>".into())));
+    s.signal_pump();
+    s.signal_pump();
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["state"], json!("disconnected"));
+    assert_eq!(transport.tickets().len(), 1);
+    // The person can still ask for it (the widget's Join).
+    s.run("signal.join", &json!({})).unwrap();
+    assert_eq!(transport.tickets().len(), 2);
+}
+
+#[test]
+fn joining_by_itself_can_be_switched_off_and_needs_a_document_from_the_edms() {
+    let (mut s, transport) = opened_from_the_edms();
+    s.run("signal.auto", &json!({"value": false})).unwrap();
+    s.signal_pump();
+    assert!(transport.tickets().is_empty());
+
+    // A document that was never in the EDMS has no collaboration to join.
+    let (mut local, their_transport) = session();
+    local.signal_pump();
+    assert!(their_transport.tickets().is_empty());
+    let refused = local.run("signal.join", &json!({})).unwrap_err().to_string();
+    assert!(refused.contains("EDMS"), "{refused}");
+}

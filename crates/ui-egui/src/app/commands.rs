@@ -1139,6 +1139,8 @@ pub(crate) fn works_without_document(id: &str) -> bool {
             | "edms.event"
             | "ui.edmsBrowser"
             | "signal.connect"
+            | "signal.join"
+            | "signal.auto"
             | "signal.disconnect"
             | "signal.status"
             | "signal.mode"

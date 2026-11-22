@@ -144,7 +144,8 @@ impl EdmsState {
         }
     }
 
-    /// The `Authorization` value of the connection, for the front end's event stream.
+    /// The `Authorization` value of the connection, for the front end's event stream and for the
+    /// ticket of a document's collaboration (the same instance, the same sign-in).
     pub fn authorization(&self) -> Option<String> {
         self.port.as_ref().and_then(|p| p.config()).map(|c| c.authorization())
     }
