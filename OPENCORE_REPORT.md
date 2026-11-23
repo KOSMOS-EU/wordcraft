@@ -29,7 +29,8 @@ Verlauf während Stufe 0 (gemessen mit `git diff --shortstat` gegen Upstream `ma
 | kosmos.20 / .21 (22.11.) | 51 Dateien, 7067 Zeilen dazu | nichts; .21 bindet nur das Kit statt drei Crates ein |
 | `62b183f6` (22.11.) | 51 Dateien, 6248 Zeilen dazu | Bereich `session`: Zustand, Pumpe, Befehle `edms.*` (945 Zeilen aus `edms.rs` und `cmd/edms.rs`); WordCraft behält den Adapter (`DocumentHost`, 126 Zeilen) und das Vorschalten der Zusammenarbeit beim Speichern |
 | `89cb287a` (23.11.) | 45 Dateien, 5427 Zeilen dazu | Features `web` und `native`: fetch, Ereignisstrom, Signal-Sockets, `nocache` (766 Zeilen); WordCraft gibt nur noch den Weckruf aus egui (`craft_opencore::egui::wake`) |
-| offen | | Signal-Sitzung (`signal.rs`), Ortswähler, Tests in den Prüfsatz |
+| `0e7386b3` (23.11.) | 44 Dateien, 4449 Zeilen dazu | Bereich `session::collab`: Journal, Rücknahme, Konfliktregel, Abgleich, Speichern über den Master, Befehle `signal.*`; WordCraft behält den Adapter `CollabHost` (`signal.rs` 1254 → 380: Momentaufnahme, Anker als Absatzbereich, Zustand als docx, Bildrahmen) |
+| offen | | Ortswähler, Bildrahmen (`signal_frame.rs`, für jede App mit Bildern), Tests in den Prüfsatz |
 
 ### Wie klein kann der Patch werden (Bewertung 23.11.2026)
 
