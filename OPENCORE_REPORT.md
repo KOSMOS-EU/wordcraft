@@ -31,7 +31,13 @@ Verlauf während Stufe 0 (gemessen mit `git diff --shortstat` gegen Upstream `ma
 | `89cb287a` (23.11.) | 45 Dateien, 5427 Zeilen dazu | Features `web` und `native`: fetch, Ereignisstrom, Signal-Sockets, `nocache` (766 Zeilen); WordCraft gibt nur noch den Weckruf aus egui (`craft_opencore::egui::wake`) |
 | `0e7386b3` (23.11.) | 44 Dateien, 4449 Zeilen dazu | Bereich `session::collab`: Journal, Rücknahme, Konfliktregel, Abgleich, Speichern über den Master, Befehle `signal.*`; WordCraft behält den Adapter `CollabHost` (`signal.rs` 1254 → 380: Momentaufnahme, Anker als Absatzbereich, Zustand als docx, Bildrahmen) |
 | `65def218` (23.11.) | 44 Dateien, 4169 Zeilen dazu | Bereich `session::picker`: Modell und Ablauf des Ortswählers; WordCraft zeichnet ihn unverändert mit seinen Bedienelementen (`edms_browser.rs` 1048 → 753) |
-| offen | | Bildrahmen (`signal_frame.rs`, für jede App mit Bildern), Tests in den Prüfsatz |
+| `eb52853b` (23.11.) | 43 Dateien, 3914 Zeilen dazu | Bildrahmen: Buchführung (`session::collab::frames`) und Bau der Rahmen (`session::collab::stand_in`, Feature `pictures`); WordCraft behält das Ersetzen im Dokument und das Wiederholen der Bildformat-Änderung. Rahmen byte-gleich mit dem alten Stand |
+
+Von den 3914 Zeilen sind 1681 Tests (`tests/signal.rs` 1130, `tests/edms.rs` 551), der Code ohne Tests liegt bei
+rund 2230 Zeilen. Die Tests bleiben in WordCraft (Bewertung 23.11.): fast jeder prüft Kit und Adapter zusammen mit
+echtem WordCraft-Inhalt (Absätze als Anker, Zustand als docx, Rahmen in den Rückgängig-Schritten, PDF-Export,
+Serienbrief-CSV). Sie sind der Nachweis, dass sich am Verhalten nichts ändert. Nur vier kleine Tests (rund 70
+Zeilen) prüfen allein das Kit, und das Kit deckt diese Fälle schon ab.
 
 Grundsatz beim Herauslösen (Auftraggeber 23.11.): Das Verhalten der App bleibt identisch, nur die Technik dahinter
 wird zerteilt. Jeder Schritt wurde Zeile für Zeile gegen den alten Code verglichen; gefundene Abweichungen
@@ -51,9 +57,9 @@ dafür keine Andockstelle hat. Schätzung je Teil nach vollständigem Herauslös
 | Ortswähler | 1048 | ~150 | Modell und Zeichnen ins Kit; bleibt: was nach der Wahl geschieht (`AfterPick`) |
 | Oberfläche Datei-Menü, Backstage, Dialoge, Kopfzeile, Einbettung | ~430 | ~350 | WordCraft hat keine Andockstelle für einen zweiten Speicherort |
 | Hüllen web und nativ | ~110 | ~70 | Einbauen, Weckruf, Abfragen der Einbettung |
-| Tests | 1680 | ~150 | Prüfsatz des Kits gegen die echte Session |
+| Tests | 1680 | ~1680 | prüfen Kit und Adapter mit echtem WordCraft-Inhalt; kleiner nur mit einem allgemeinen Prüfsatz des Kits, den jede App mit ihren Befehlen füttert (nicht begonnen) |
 | Cargo | ~15 | ~15 | |
-| **Summe** | **~5400** | **~1200** | |
+| **Summe** | **~5400** | **~1200 Code, dazu die Tests** | |
 
 Unter 400 Zeilen geht nur mit Andockstellen in Upstream: ein Speicherort-Anbieter für Datei-Menü und Dialoge, ein
 Haken in `Session::run` für Erweiterungen, Befehle aus einem Plugin registrierbar. Dann blieben Adapter und
