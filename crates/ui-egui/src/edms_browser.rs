@@ -8,15 +8,14 @@
 //! own results by id and leaves the rest for `edms.poll`. The picked file goes to the same
 //! follow-up as the system dialog's ([`AfterPick`]).
 
-use craft_opencore::session::picker::{Note, Picker, Purpose, own_place};
-use egui::{Align2, Rect, Sense, Ui, pos2, vec2};
+use craft_opencore::egui::picker::{self as kit, Done, Fit, PickerColors, PickerIcon, PickerLook};
+use craft_opencore::session::picker::{Picker, Purpose, own_place};
+use egui::{Align2, vec2};
 use serde_json::Value;
 
 use crate::file_dialogs::{AfterPick, FileDialogRequest, open_filters};
 use crate::theme::{Tokens, regular};
 use crate::{WordApp, icons};
-
-const ROW: f32 = 24.0;
 
 /// The picker while it is open, and the place it showed last (where it opens next time).
 #[derive(Default)]
@@ -258,7 +257,8 @@ pub(crate) fn show(app: &mut WordApp, ctx: &egui::Context) {
     let fit = Fit::of(ctx.content_rect());
     let shown = crate::window_close::window(ctx, window).show(ctx, |ui| {
         ui.set_width(fit.width);
-        done = crate::rtl::root(ui, |ui| body(ui, &mut b, &t, &fit));
+        let ok_label = tl!(b.ok_label());
+        done = kit::body(ui, &mut b, &WordLook { tokens: &t }, &fit, ok_label);
     });
     if let Some(s) = &shown {
         if crate::window_close::show(ctx, &s.response, &t) {
@@ -283,267 +283,362 @@ pub(crate) fn show(app: &mut WordApp, ctx: &egui::Context) {
     }
 }
 
-/// How the picker fits the surface it is drawn on: a phone-sized surface is narrower and lower than
-/// the picker's desktop size.
-struct Fit {
-    width: f32,
-    /// Height of the folder's list.
-    list_height: f32,
-    /// Too narrow for the spaces beside the folder: the spaces become a drop-down above it and the
-    /// file type moves below the name.
-    narrow: bool,
-}
-
-impl Fit {
-    fn of(surface: Rect) -> Self {
-        let width = (surface.width() - 32.0).clamp(240.0, 760.0);
-        let narrow = width < 560.0;
-        // Title bar, path row, name row, buttons and margins around the list.
-        let around_list = if narrow { 290.0 } else { 230.0 };
-        let list_height = (surface.height() - around_list).clamp(110.0, 300.0);
-        Self { width, list_height, narrow }
-    }
-}
-
-/// What the body asks for once the frame is drawn.
-enum Done {
-    Cancel,
-    Accept,
-    /// The folder or drive changed: list it.
-    Moved,
-    /// The file type changed: list the folder again.
-    Refilter,
-}
-
 /// OK in the picker: move, or run the pick and wait for its answer.
 fn accept(app: &mut WordApp) {
     let Some(b) = app.edms_browser.open.as_mut() else { return };
     b.accept_and_run(&mut runner(&mut app.session));
 }
 
-/// The picker's contents; `Some` when something is to be done once the frame is drawn.
-fn body(ui: &mut Ui, b: &mut EdmsBrowser, t: &Tokens, fit: &Fit) -> Option<Done> {
-    let mut done = None;
-    let mut pick = false;
-    let panes = |ui: &mut Ui| {
-        // The spaces.
-        if fit.narrow {
-            let mut chosen = b.drive;
-            let current = b.drive.and_then(|i| b.drives.get(i)).map(|d| d.name.clone()).unwrap_or_default();
-            craft_ui::ComboBox::from_id_salt("edms_browser_drive")
-                .selected_text(current)
-                .width(ui.available_width())
-                .show_ui(ui, |ui| {
-                    for (i, d) in b.drives.iter().enumerate() {
-                        ui.selectable_value(&mut chosen, Some(i), d.name.as_str());
-                    }
-                })
-                .response
-                .accessible_name(tl!("Spaces"));
-            if b.choose_drive(chosen) {
-                done = Some(Done::Moved);
+/// WordCraft's look for the kit's picker: its colours, words, icons, font and reading direction.
+struct WordLook<'a> {
+    tokens: &'a Tokens,
+}
+
+impl PickerLook for WordLook<'_> {
+    fn colors(&self) -> PickerColors {
+        let t = self.tokens;
+        PickerColors {
+            text: t.text,
+            text_dim: t.text_dim,
+            text_disabled: t.text_disabled,
+            input: t.input,
+            input_border: t.input_border,
+            checked: t.checked,
+            hover: t.hover,
+            icon: t.icon,
+            accent: t.accent,
+            warning: t.red,
+        }
+    }
+
+    fn tr(&self, english: &str) -> String {
+        tl!(english).to_string()
+    }
+
+    fn fmt(&self, template: &str, args: &[(&str, &str)]) -> String {
+        crate::i18n::fmt(template, args)
+    }
+
+    fn icon(&self, painter: &egui::Painter, rect: egui::Rect, icon: PickerIcon, color: egui::Color32, accent: egui::Color32) {
+        let name = match icon {
+            PickerIcon::HomeFolder => "homeFolder",
+            PickerIcon::Folder => "folder",
+            PickerIcon::File => "file",
+            PickerIcon::Up => "chevronUp",
+        };
+        icons::paint(painter, rect, name, color, accent);
+    }
+
+    fn font(&self, size: f32) -> egui::FontId {
+        regular(size)
+    }
+
+    fn rtl(&self) -> bool {
+        crate::rtl::on()
+    }
+
+    fn isolate(&self, name: &str) -> String {
+        crate::i18n::isolate(name)
+    }
+
+    fn isolate_path(&self, path: &str) -> String {
+        crate::i18n::isolate_path(path)
+    }
+
+    fn lead_x(&self, rtl: bool, rect: egui::Rect, inset: f32) -> f32 {
+        crate::rtl::lead_x(rtl, rect, inset)
+    }
+
+    fn root(&self, ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui) -> Option<Done>) -> Option<Done> {
+        crate::rtl::root(ui, add)
+    }
+
+    fn far_side(&self, ui: &egui::Ui, align: egui::Align) -> egui::Layout {
+        crate::rtl::far_side(ui, align)
+    }
+
+    fn combo(&self, ui: &mut egui::Ui, id_salt: &str, selected: String, width: f32, accessible_name: &str, contents: &mut dyn FnMut(&mut egui::Ui)) {
+        craft_ui::ComboBox::from_id_salt(id_salt)
+            .selected_text(selected)
+            .width(width)
+            .show_ui(ui, contents)
+            .response
+            .accessible_name(accessible_name);
+    }
+
+    fn ok_cancel(&self, ui: &mut egui::Ui, ok: &str, cancel: &str) -> (egui::Response, egui::Response) {
+        crate::dialogs::ok_cancel_responses(ui, |ui| ui.add(crate::widgets::primary_button(ui, ok)), cancel)
+    }
+}
+
+/// The picker as WordCraft drew it before the kit drew it, kept only to prove the kit draws the same.
+#[cfg(test)]
+#[allow(dead_code)]
+mod kit_before {
+    use super::*;
+    use craft_opencore::session::picker::Note;
+    use egui::{Rect, Sense, Ui, pos2};
+
+    const ROW: f32 = 24.0;
+
+    /// How the picker fits the surface it is drawn on: a phone-sized surface is narrower and lower than
+    /// the picker's desktop size.
+    pub(super) struct Fit {
+        width: f32,
+        /// Height of the folder's list.
+        list_height: f32,
+        /// Too narrow for the spaces beside the folder: the spaces become a drop-down above it and the
+        /// file type moves below the name.
+        narrow: bool,
+    }
+
+    impl Fit {
+        pub(super) fn of(surface: Rect) -> Self {
+            let width = (surface.width() - 32.0).clamp(240.0, 760.0);
+            let narrow = width < 560.0;
+            // Title bar, path row, name row, buttons and margins around the list.
+            let around_list = if narrow { 290.0 } else { 230.0 };
+            let list_height = (surface.height() - around_list).clamp(110.0, 300.0);
+            Self { width, list_height, narrow }
+        }
+    }
+
+    /// What the body asks for once the frame is drawn.
+    pub(super) enum Done {
+        Cancel,
+        Accept,
+        /// The folder or drive changed: list it.
+        Moved,
+        /// The file type changed: list the folder again.
+        Refilter,
+    }
+
+    /// The picker's contents; `Some` when something is to be done once the frame is drawn.
+    pub(super) fn body(ui: &mut Ui, b: &mut EdmsBrowser, t: &Tokens, fit: &Fit) -> Option<Done> {
+        let mut done = None;
+        let mut pick = false;
+        let panes = |ui: &mut Ui| {
+            // The spaces.
+            if fit.narrow {
+                let mut chosen = b.drive;
+                let current = b.drive.and_then(|i| b.drives.get(i)).map(|d| d.name.clone()).unwrap_or_default();
+                craft_ui::ComboBox::from_id_salt("edms_browser_drive")
+                    .selected_text(current)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for (i, d) in b.drives.iter().enumerate() {
+                            ui.selectable_value(&mut chosen, Some(i), d.name.as_str());
+                        }
+                    })
+                    .response
+                    .accessible_name(tl!("Spaces"));
+                if b.choose_drive(chosen) {
+                    done = Some(Done::Moved);
+                }
+            } else {
+                ui.vertical(|ui| {
+                    ui.set_width(200.0);
+                    ui.label(egui::RichText::new(tl!("Spaces")).color(t.text_dim));
+                    egui::Frame::NONE.fill(t.input).stroke(egui::Stroke::new(1.0, t.input_border)).inner_margin(2.0).show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("edms_drives")
+                            .max_height(fit.list_height + 40.0)
+                            .min_scrolled_height(fit.list_height + 40.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if b.drives.is_empty() {
+                                    ui.add_space((fit.list_height / 2.0).max(20.0));
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(if b.busy() { tl!("Loading…") } else { tl!("No spaces to browse.") })
+                                                .small()
+                                                .color(t.text_dim),
+                                        );
+                                    });
+                                }
+                                for i in 0..b.drives.len() {
+                                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+                                    if b.drive == Some(i) {
+                                        ui.painter().rect_filled(r, 2.0, t.checked);
+                                    } else if resp.hovered() {
+                                        ui.painter().rect_filled(r, 2.0, t.hover);
+                                    }
+                                    let Some(d) = b.drives.get(i) else { break };
+                                    let rtl = crate::rtl::on();
+                                    let icon = Rect::from_center_size(pos2(crate::rtl::lead_x(rtl, r, 14.0), r.center().y), vec2(18.0, 18.0));
+                                    icons::paint(ui.painter(), icon, if d.kind == "personal" { "homeFolder" } else { "folder" }, t.icon, t.accent);
+                                    let name = d.name.clone();
+                                    let resp = if row_text(ui, r, &name, t, rtl) { resp.on_hover_text(&name) } else { resp };
+                                    if resp.clicked() && b.choose_drive(Some(i)) {
+                                        done = Some(Done::Moved);
+                                    }
+                                }
+                            });
+                    });
+                });
             }
-        } else {
+            ui.add_space(8.0);
+            // The folder.
             ui.vertical(|ui| {
-                ui.set_width(200.0);
-                ui.label(egui::RichText::new(tl!("Spaces")).color(t.text_dim));
+                ui.horizontal(|ui| {
+                    if icon_button(ui, t, "chevronUp", tl!("Up one level"), b.path != "/" && !b.busy()) {
+                        b.up();
+                        done = Some(Done::Moved);
+                    }
+                    let where_ = match b.drive.and_then(|i| b.drives.get(i)) {
+                        Some(d) if b.path == "/" => d.name.clone(),
+                        Some(d) => format!("{}{}", d.name, b.path),
+                        None => String::new(),
+                    };
+                    ui.label(egui::RichText::new(crate::i18n::isolate_path(&where_)).font(regular(13.0))).on_hover_text(&where_);
+                });
+                ui.add_space(4.0);
+                let mut clicked: Option<(usize, bool)> = None;
                 egui::Frame::NONE.fill(t.input).stroke(egui::Stroke::new(1.0, t.input_border)).inner_margin(2.0).show(ui, |ui| {
                     egui::ScrollArea::vertical()
-                        .id_salt("edms_drives")
-                        .max_height(fit.list_height + 40.0)
-                        .min_scrolled_height(fit.list_height + 40.0)
+                        .id_salt("edms_entries")
+                        .max_height(fit.list_height)
+                        .min_scrolled_height(fit.list_height)
                         .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            if b.drives.is_empty() {
-                                ui.add_space((fit.list_height / 2.0).max(20.0));
+                        .show_rows(ui, ROW, b.entries.len(), |ui, range| {
+                            if b.entries.is_empty() {
+                                ui.add_space((fit.list_height / 2.0 - 10.0).max(20.0));
                                 ui.vertical_centered(|ui| {
                                     ui.label(
-                                        egui::RichText::new(if b.busy() { tl!("Loading…") } else { tl!("No spaces to browse.") })
+                                        egui::RichText::new(if b.busy() { tl!("Loading…") } else { tl!("No items to show.") })
                                             .small()
                                             .color(t.text_dim),
                                     );
                                 });
                             }
-                            for i in 0..b.drives.len() {
+                            for i in range {
+                                let Some(e) = b.entries.get(i) else { break };
                                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-                                if b.drive == Some(i) {
+                                if b.selected == Some(i) {
                                     ui.painter().rect_filled(r, 2.0, t.checked);
                                 } else if resp.hovered() {
                                     ui.painter().rect_filled(r, 2.0, t.hover);
                                 }
-                                let Some(d) = b.drives.get(i) else { break };
                                 let rtl = crate::rtl::on();
                                 let icon = Rect::from_center_size(pos2(crate::rtl::lead_x(rtl, r, 14.0), r.center().y), vec2(18.0, 18.0));
-                                icons::paint(ui.painter(), icon, if d.kind == "personal" { "homeFolder" } else { "folder" }, t.icon, t.accent);
-                                let name = d.name.clone();
-                                let resp = if row_text(ui, r, &name, t, rtl) { resp.on_hover_text(&name) } else { resp };
-                                if resp.clicked() && b.choose_drive(Some(i)) {
-                                    done = Some(Done::Moved);
+                                icons::paint(ui.painter(), icon, if e.folder { "folder" } else { "file" }, t.icon, t.accent);
+                                let resp = if row_text(ui, r, &e.name, t, rtl) { resp.on_hover_text(&e.name) } else { resp };
+                                if resp.double_clicked() {
+                                    clicked = Some((i, true));
+                                } else if resp.clicked() {
+                                    clicked = Some((i, false));
                                 }
                             }
                         });
                 });
+                if let Some((i, double)) = clicked {
+                    b.select(i);
+                    if double {
+                        pick = true;
+                    }
+                }
+                let message = match &b.note {
+                    Note::NotFound(name) => Some((crate::i18n::fmt(tl!("{name} wasn't found."), &[("name", name)]), t.red)),
+                    Note::Replace(name) => {
+                        Some((crate::i18n::fmt(tl!("{name} already exists. Choose Save again to replace it."), &[("name", name)]), t.red))
+                    }
+                    Note::NoDrives => Some((tl!("No spaces to browse.").to_string(), t.red)),
+                    Note::Error(e) => Some((e.clone(), t.red)),
+                    Note::None if b.truncated => {
+                        Some((crate::i18n::fmt(tl!("Showing the first {count} items."), &[("count", &b.entries.len().to_string())]), t.text_dim))
+                    }
+                    Note::None => None,
+                };
+                if let Some((text, color)) = message {
+                    ui.label(egui::RichText::new(text).color(color));
+                }
             });
+        };
+        if fit.narrow {
+            ui.vertical(panes);
+        } else {
+            ui.horizontal_top(panes);
+        }
+        ui.add_space(6.0);
+        let name_row = |ui: &mut Ui| {
+            let label = ui.label(tl!("File name:"));
+            // Narrow: the name takes the rest of the row, the file type wraps below it.
+            let width = if fit.narrow { (ui.available_width() - 12.0).max(120.0) } else { (ui.available_width() - 170.0).max(120.0) };
+            let r = ui.add(egui::TextEdit::singleline(&mut b.name).desired_width(width)).labelled_by(label.id);
+            if b.focus_name {
+                r.request_focus();
+                b.focus_name = false;
+            }
+            if r.changed() {
+                b.name_edited();
+            }
+            let before = b.filter;
+            let current = b.filters.get(b.filter).map(|(l, _)| tl!(l.as_str()).to_string()).unwrap_or_default();
+            craft_ui::ComboBox::from_id_salt("edms_browser_type")
+                .selected_text(current)
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    let picker: &mut Picker = b;
+                    for (i, (l, _)) in picker.filters.iter().enumerate() {
+                        ui.selectable_value(&mut picker.filter, i, tl!(l.as_str()));
+                    }
+                })
+                .response
+                .accessible_name(tl!("File type"));
+            if b.filter != before {
+                done = Some(Done::Refilter);
+            }
+        };
+        if fit.narrow {
+            ui.horizontal_wrapped(name_row);
+        } else {
+            ui.horizontal(name_row);
         }
         ui.add_space(8.0);
-        // The folder.
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                if icon_button(ui, t, "chevronUp", tl!("Up one level"), b.path != "/" && !b.busy()) {
-                    b.up();
-                    done = Some(Done::Moved);
-                }
-                let where_ = match b.drive.and_then(|i| b.drives.get(i)) {
-                    Some(d) if b.path == "/" => d.name.clone(),
-                    Some(d) => format!("{}{}", d.name, b.path),
-                    None => String::new(),
-                };
-                ui.label(egui::RichText::new(crate::i18n::isolate_path(&where_)).font(regular(13.0))).on_hover_text(&where_);
+        let mut cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.horizontal(|ui| {
+            ui.with_layout(crate::rtl::far_side(ui, egui::Align::Center), |ui| {
+                let (ok, cancelb) =
+                    crate::dialogs::ok_cancel_responses(ui, |ui| ui.add(crate::widgets::primary_button(ui, tl!(b.ok_label()))), tl!("Cancel"));
+                cancel |= cancelb.clicked();
+                pick |= ok.clicked() || enter;
             });
-            ui.add_space(4.0);
-            let mut clicked: Option<(usize, bool)> = None;
-            egui::Frame::NONE.fill(t.input).stroke(egui::Stroke::new(1.0, t.input_border)).inner_margin(2.0).show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("edms_entries")
-                    .max_height(fit.list_height)
-                    .min_scrolled_height(fit.list_height)
-                    .auto_shrink([false, false])
-                    .show_rows(ui, ROW, b.entries.len(), |ui, range| {
-                        if b.entries.is_empty() {
-                            ui.add_space((fit.list_height / 2.0 - 10.0).max(20.0));
-                            ui.vertical_centered(|ui| {
-                                ui.label(
-                                    egui::RichText::new(if b.busy() { tl!("Loading…") } else { tl!("No items to show.") }).small().color(t.text_dim),
-                                );
-                            });
-                        }
-                        for i in range {
-                            let Some(e) = b.entries.get(i) else { break };
-                            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-                            if b.selected == Some(i) {
-                                ui.painter().rect_filled(r, 2.0, t.checked);
-                            } else if resp.hovered() {
-                                ui.painter().rect_filled(r, 2.0, t.hover);
-                            }
-                            let rtl = crate::rtl::on();
-                            let icon = Rect::from_center_size(pos2(crate::rtl::lead_x(rtl, r, 14.0), r.center().y), vec2(18.0, 18.0));
-                            icons::paint(ui.painter(), icon, if e.folder { "folder" } else { "file" }, t.icon, t.accent);
-                            let resp = if row_text(ui, r, &e.name, t, rtl) { resp.on_hover_text(&e.name) } else { resp };
-                            if resp.double_clicked() {
-                                clicked = Some((i, true));
-                            } else if resp.clicked() {
-                                clicked = Some((i, false));
-                            }
-                        }
-                    });
-            });
-            if let Some((i, double)) = clicked {
-                b.select(i);
-                if double {
-                    pick = true;
-                }
-            }
-            let message = match &b.note {
-                Note::NotFound(name) => Some((crate::i18n::fmt(tl!("{name} wasn't found."), &[("name", name)]), t.red)),
-                Note::Replace(name) => {
-                    Some((crate::i18n::fmt(tl!("{name} already exists. Choose Save again to replace it."), &[("name", name)]), t.red))
-                }
-                Note::NoDrives => Some((tl!("No spaces to browse.").to_string(), t.red)),
-                Note::Error(e) => Some((e.clone(), t.red)),
-                Note::None if b.truncated => {
-                    Some((crate::i18n::fmt(tl!("Showing the first {count} items."), &[("count", &b.entries.len().to_string())]), t.text_dim))
-                }
-                Note::None => None,
-            };
-            if let Some((text, color)) = message {
-                ui.label(egui::RichText::new(text).color(color));
-            }
         });
-    };
-    if fit.narrow {
-        ui.vertical(panes);
-    } else {
-        ui.horizontal_top(panes);
-    }
-    ui.add_space(6.0);
-    let name_row = |ui: &mut Ui| {
-        let label = ui.label(tl!("File name:"));
-        // Narrow: the name takes the rest of the row, the file type wraps below it.
-        let width = if fit.narrow { (ui.available_width() - 12.0).max(120.0) } else { (ui.available_width() - 170.0).max(120.0) };
-        let r = ui.add(egui::TextEdit::singleline(&mut b.name).desired_width(width)).labelled_by(label.id);
-        if b.focus_name {
-            r.request_focus();
-            b.focus_name = false;
+        if cancel {
+            return Some(Done::Cancel);
         }
-        if r.changed() {
-            b.name_edited();
+        if pick {
+            return Some(Done::Accept);
         }
-        let before = b.filter;
-        let current = b.filters.get(b.filter).map(|(l, _)| tl!(l.as_str()).to_string()).unwrap_or_default();
-        craft_ui::ComboBox::from_id_salt("edms_browser_type")
-            .selected_text(current)
-            .width(150.0)
-            .show_ui(ui, |ui| {
-                let picker: &mut Picker = b;
-                for (i, (l, _)) in picker.filters.iter().enumerate() {
-                    ui.selectable_value(&mut picker.filter, i, tl!(l.as_str()));
-                }
-            })
-            .response
-            .accessible_name(tl!("File type"));
-        if b.filter != before {
-            done = Some(Done::Refilter);
-        }
-    };
-    if fit.narrow {
-        ui.horizontal_wrapped(name_row);
-    } else {
-        ui.horizontal(name_row);
+        done
     }
-    ui.add_space(8.0);
-    let mut cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
-    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-    ui.horizontal(|ui| {
-        ui.with_layout(crate::rtl::far_side(ui, egui::Align::Center), |ui| {
-            let (ok, cancelb) =
-                crate::dialogs::ok_cancel_responses(ui, |ui| ui.add(crate::widgets::primary_button(ui, tl!(b.ok_label()))), tl!("Cancel"));
-            cancel |= cancelb.clicked();
-            pick |= ok.clicked() || enter;
-        });
-    });
-    if cancel {
-        return Some(Done::Cancel);
-    }
-    if pick {
-        return Some(Done::Accept);
-    }
-    done
-}
 
-/// A name in a row: a long one keeps its beginning and ends in an ellipsis; true then, so the
-/// caller shows the whole name as the row's tooltip.
-fn row_text(ui: &mut Ui, r: Rect, name: &str, t: &Tokens, rtl: bool) -> bool {
-    let mut job = egui::text::LayoutJob::simple_singleline(crate::i18n::isolate(name), regular(13.0), t.text);
-    job.wrap.max_width = (r.width() - 36.0).max(0.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    let galley = ui.painter().layout_job(job);
-    let text_x = crate::rtl::lead_x(rtl, r, 30.0);
-    let at = pos2(if rtl { text_x - galley.size().x } else { text_x }, r.center().y - galley.size().y / 2.0);
-    let elided = galley.elided;
-    ui.painter().galley(at, galley, t.text);
-    elided
-}
-
-/// A small button with a drawn icon and a tooltip; true when clicked.
-fn icon_button(ui: &mut Ui, t: &Tokens, icon: &str, tip: &str, enabled: bool) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(28.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
-    if enabled && resp.hovered() {
-        ui.painter().rect_filled(r, 3.0, t.hover);
+    /// A name in a row: a long one keeps its beginning and ends in an ellipsis; true then, so the
+    /// caller shows the whole name as the row's tooltip.
+    fn row_text(ui: &mut Ui, r: Rect, name: &str, t: &Tokens, rtl: bool) -> bool {
+        let mut job = egui::text::LayoutJob::simple_singleline(crate::i18n::isolate(name), regular(13.0), t.text);
+        job.wrap.max_width = (r.width() - 36.0).max(0.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let galley = ui.painter().layout_job(job);
+        let text_x = crate::rtl::lead_x(rtl, r, 30.0);
+        let at = pos2(if rtl { text_x - galley.size().x } else { text_x }, r.center().y - galley.size().y / 2.0);
+        let elided = galley.elided;
+        ui.painter().galley(at, galley, t.text);
+        elided
     }
-    let c = if enabled { t.icon } else { t.text_disabled };
-    icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(18.0, 18.0)), icon, c, if enabled { t.accent } else { c });
-    resp.on_hover_text(tip).clicked()
+
+    /// A small button with a drawn icon and a tooltip; true when clicked.
+    fn icon_button(ui: &mut Ui, t: &Tokens, icon: &str, tip: &str, enabled: bool) -> bool {
+        let (r, resp) = ui.allocate_exact_size(vec2(28.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
+        if enabled && resp.hovered() {
+            ui.painter().rect_filled(r, 3.0, t.hover);
+        }
+        let c = if enabled { t.icon } else { t.text_disabled };
+        icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(18.0, 18.0)), icon, c, if enabled { t.accent } else { c });
+        resp.on_hover_text(tip).clicked()
+    }
 }
 
 #[cfg(test)]
@@ -551,7 +646,8 @@ mod tests {
     use super::*;
     use crate::Services;
     use craft_opencore::edms::{Client, HttpResponse, Method, RecordingTransport};
-    use craft_opencore::session::picker::{Entry, Step, matches};
+    use craft_opencore::session::picker::{Entry, Note, Step, matches};
+    use egui::Ui;
     use serde_json::json;
     use wordcraft_engine::Session;
 
@@ -585,6 +681,102 @@ mod tests {
         transport.answer(id, response);
         a.session.edms_pump();
         poll(a);
+    }
+
+    /// The kit draws the picker as WordCraft drew it: the same shapes, frame after frame, wide and narrow, in
+    /// English and in Arabic, with every note and while waiting.
+    #[test]
+    fn the_kit_draws_the_picker_as_wordcraft_did() {
+        use craft_opencore::session::picker::Drive;
+
+        fn picker(save: bool, note: Note, waiting: bool) -> EdmsBrowser {
+            let (request, after) = if save {
+                (
+                    FileDialogRequest::Save { name: "Bericht über das Jahr.docx".into(), dir: None },
+                    AfterPick::SaveAs { after: crate::file_dialogs::AfterSave::Nothing, document: 1 },
+                )
+            } else {
+                (FileDialogRequest::Open { purpose: "document".into() }, AfterPick::OpenDocument { document: 1 })
+            };
+            let mut b = EdmsBrowser::new(request, after);
+            if waiting {
+                b.start(&mut |_, _| Ok(json!({"pending": 7})));
+                return b;
+            }
+            b.drives = vec![
+                Drive { id: "p".into(), name: "Thomas Wit".into(), kind: "personal".into() },
+                Drive { id: "a".into(), name: "Projekt mit einem sehr langen Namen, der nicht in die Zeile passt".into(), kind: "project".into() },
+                Drive { id: "b".into(), name: "مشروع".into(), kind: "project".into() },
+            ];
+            b.drive = Some(1);
+            b.path = "/Ordner A/Unterordner".into();
+            b.entries = vec![
+                Entry { name: "Bilder".into(), path: "/Ordner A/Unterordner/Bilder".into(), folder: true },
+                Entry { name: "craft-test.docx".into(), path: "/x/craft-test.docx".into(), folder: false },
+                Entry {
+                    name: "Ein Dokument mit einem Namen, der viel zu lang für die Zeile ist und gekürzt wird.docx".into(),
+                    path: "/x/l.docx".into(),
+                    folder: false,
+                },
+                Entry { name: "تقرير.docx".into(), path: "/x/t.docx".into(), folder: false },
+            ];
+            b.selected = Some(1);
+            b.truncated = matches!(note, Note::None);
+            b.note = note;
+            b
+        }
+
+        fn frames(surface: egui::Vec2, draw: &mut dyn FnMut(&mut Ui, &Fit, &kit_before::Fit)) -> Vec<String> {
+            let ctx = egui::Context::default();
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, surface);
+            (0..3)
+                .map(|_| {
+                    let input = egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+                    let output = ctx.run_ui(input, |ui| {
+                        let (fit, before) = (Fit::of(ui.ctx().content_rect()), kit_before::Fit::of(ui.ctx().content_rect()));
+                        draw(ui, &fit, &before);
+                    });
+                    let shapes = format!("{:?}", output.shapes);
+                    output.drop_without_applying_deltas();
+                    shapes
+                })
+                .collect()
+        }
+
+        let notes = || {
+            vec![
+                Note::None,
+                Note::NotFound("fehlt.docx".into()),
+                Note::Replace("craft-test.docx".into()),
+                Note::NoDrives,
+                Note::Error("the EDMS answered 403".into()),
+            ]
+        };
+        let mut compared = 0;
+        for language in [crate::i18n::Lang::EN, crate::i18n::Lang::from_code("ar").unwrap()] {
+            crate::i18n::set_current(language);
+            for surface in [vec2(1400.0, 900.0), vec2(400.0, 700.0)] {
+                for (note_index, waiting) in (0..notes().len()).map(|i| (i, false)).chain([(0, true)]) {
+                    for save in [true, false] {
+                        let mut old = picker(save, notes().swap_remove(note_index), waiting);
+                        let mut new = picker(save, notes().swap_remove(note_index), waiting);
+                        let before = frames(surface, &mut |ui, _, fit| {
+                            let t = Tokens::get(ui.ctx());
+                            crate::rtl::root(ui, |ui| kit_before::body(ui, &mut old, &t, fit));
+                        });
+                        let after_kit = frames(surface, &mut |ui, fit, _| {
+                            let t = Tokens::get(ui.ctx());
+                            let ok_label = tl!(new.ok_label());
+                            kit::body(ui, &mut new, &WordLook { tokens: &t }, fit, ok_label);
+                        });
+                        assert_eq!(before, after_kit, "{language:?} {surface:?} note {note_index} waiting {waiting} save {save}");
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        crate::i18n::set_current(crate::i18n::Lang::EN);
+        assert_eq!(compared, 48);
     }
 
     /// Without local files, Open, Insert Picture and Save As go to the EDMS picker, never to the
