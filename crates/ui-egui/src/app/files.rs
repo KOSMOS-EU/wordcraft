@@ -584,13 +584,13 @@ impl WordApp {
     pub(crate) fn edms_request(&mut self, edms: &Value) {
         if let Some(event) = edms.get("event").and_then(Value::as_str) {
             let text = match event {
-                "saved" => tl!("Saved to the cloud"),
-                "opened" => tl!("Opened from the cloud"),
-                "reloaded" => tl!("Reloaded the cloud version"),
-                "relocated" => tl!("Saved as a new file in the cloud"),
+                "saved" => tl!("Saved to Core"),
+                "opened" => tl!("Opened from Core"),
+                "reloaded" => tl!("Reloaded the version from Core"),
+                "relocated" => tl!("Saved as a new file in Core"),
                 "openFailed" => {
                     let message = edms.get("message").and_then(Value::as_str).unwrap_or("");
-                    self.status(crate::i18n::fmt(tl!("Opening from the cloud failed: {message}"), &[("message", message)]));
+                    self.status(crate::i18n::fmt(tl!("Opening from Core failed: {message}"), &[("message", message)]));
                     // The status bar is behind File: the Start screen of a launch that named this
                     // file says it too, in the words a local file that wouldn't open gets.
                     let name = edms.get("name").and_then(Value::as_str).unwrap_or("");
@@ -611,9 +611,9 @@ impl WordApp {
         }
         if let Some(advice) = edms.get("advice").and_then(Value::as_str) {
             let text = match advice {
-                "reload" => tl!("Someone else saved a new version. File › Reload from the cloud gets it."),
+                "reload" => tl!("Someone else saved a new version. File › Reload from Core gets it."),
                 "conflict" => tl!("Someone else saved a new version while you have unsaved changes. Save As keeps yours; Reload takes theirs."),
-                "saveAs" => tl!("The file was renamed, moved or deleted in the cloud. Save As puts it somewhere."),
+                "saveAs" => tl!("The file was renamed, moved or deleted in Core. Save As puts it somewhere."),
                 _ => return,
             };
             self.status(text.to_string());
