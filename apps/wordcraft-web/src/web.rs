@@ -187,8 +187,9 @@ impl eframe::App for WebShell {
             self.app.status(msg);
         }
         for params in self.edms_events.frame(&self.app.session.edms) {
+            let kind = params["type"].as_str().unwrap_or_default().to_string();
             if let Err(error) = self.app.run("edms.event", params) {
-                log::debug!("edms events: not taken: {error}");
+                log::debug!("edms events: {kind} not taken: {error}");
             }
         }
         self.app.logic(ctx);

@@ -138,6 +138,7 @@ fn held_picture(doc: &Document, attachment: &Attachment) -> Option<String> {
 
 impl CollabHost for Session {
     type Snapshot = Box<EditSnapshot>;
+    type Selection = Selection;
 
     fn signal(&self) -> &SignalState {
         &self.signal
@@ -164,9 +165,15 @@ impl CollabHost for Session {
     }
 
     fn restore(&mut self, snapshot: Box<EditSnapshot>) {
-        let mine = self.sel.clone();
         Session::restore(self, *snapshot);
-        self.sel = mine;
+    }
+
+    fn selection(&self) -> Selection {
+        self.sel.clone()
+    }
+
+    fn set_selection(&mut self, selection: Selection) {
+        self.sel = selection;
         self.clamp_selection();
     }
 
@@ -255,14 +262,15 @@ impl CollabHost for Session {
 
     /// The picture `hash` is complete here: put it where its frames are, in the document, in the undo
     /// and redo steps and in the journal's snapshots. Returns how many frames it filled.
-    fn content_arrived(&mut self, hash: &Hash, content: &[u8], snapshots: &mut [&mut Box<EditSnapshot>]) -> usize {
+    fn content_arrived(&mut self, hash: &Hash, content: Option<&[u8]>, snapshots: &mut [&mut Box<EditSnapshot>]) -> usize {
         let (waiting, rest): (Vec<Frame>, Vec<Frame>) =
             std::mem::take(&mut self.signal_frames.frames).into_iter().partition(|frame| frame.hash == *hash);
         self.signal_frames.frames = rest;
         if waiting.is_empty() {
             return 0;
         }
-        let Some(content) = std::str::from_utf8(content).ok().and_then(crate::cmd::insert::base64_decode).map(Arc::new) else {
+        let Some(content) = content.and_then(|base64| std::str::from_utf8(base64).ok()).and_then(crate::cmd::insert::base64_decode).map(Arc::new)
+        else {
             self.signal.note(json!({"event": "error", "message": "a picture arrived that can't be read; its frame stays"}));
             return 0;
         };
@@ -277,6 +285,11 @@ impl CollabHost for Session {
 
     fn extend_status(&self, status: &mut Value) {
         status["framed"] = json!(self.signal_frames.framed());
+    }
+
+    /// Saved by the master on this state: clean, nothing else changes (no new stamps here).
+    fn saved_by_master(&mut self) {
+        self.dirty = false;
     }
 
     fn collab_reset(&mut self) {
