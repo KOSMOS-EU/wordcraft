@@ -28,7 +28,30 @@ Verlauf während Stufe 0 (gemessen mit `git diff --shortstat` gegen Upstream `ma
 |---|---|---|
 | kosmos.20 / .21 (22.11.) | 51 Dateien, 7067 Zeilen dazu | nichts; .21 bindet nur das Kit statt drei Crates ein |
 | `62b183f6` (22.11.) | 51 Dateien, 6248 Zeilen dazu | Bereich `session`: Zustand, Pumpe, Befehle `edms.*` (945 Zeilen aus `edms.rs` und `cmd/edms.rs`); WordCraft behält den Adapter (`DocumentHost`, 126 Zeilen) und das Vorschalten der Zusammenarbeit beim Speichern |
-| offen | | Web-Transporte, native Transporte, Ortswähler, Tests von `edms.rs` in den Prüfsatz |
+| `89cb287a` (23.11.) | 45 Dateien, 5427 Zeilen dazu | Features `web` und `native`: fetch, Ereignisstrom, Signal-Sockets, `nocache` (766 Zeilen); WordCraft gibt nur noch den Weckruf aus egui (`craft_opencore::egui::wake`) |
+| offen | | Signal-Sitzung (`signal.rs`), Ortswähler, Tests in den Prüfsatz |
+
+### Wie klein kann der Patch werden (Bewertung 23.11.2026)
+
+Ohne Mitwirkung von Upstream bleiben Stellen, an denen das Plugin in WordCraft eingreifen muss, weil WordCraft
+dafür keine Andockstelle hat. Schätzung je Teil nach vollständigem Herauslösen:
+
+| Teil | heute | erreichbar | warum es bleibt |
+|---|---|---|---|
+| Signal-Sitzung (`signal.rs`, `signal_frame.rs`, `cmd/signal.rs`) | 1558 | ~250 | Adapter: Schnappschuss, Anker als Absatzbereich, Befehl fremd ausführen, Zustand als docx, Bildrahmen (WordCraft-eigen) |
+| EDMS-Adapter und Befehle | 252 | ~120 | `DocumentHost`; Speichern mit Zusammenarbeit geht ins Kit |
+| Eingriffe in den Kern (`run`, history, snapshot, documents, lifecycle, picture) | ~80 | ~80 | Aufzeichnen jeder Änderung, Sperre beim Abgleich, Bild-Cache-Zähler |
+| Ortswähler | 1048 | ~150 | Modell und Zeichnen ins Kit; bleibt: was nach der Wahl geschieht (`AfterPick`) |
+| Oberfläche Datei-Menü, Backstage, Dialoge, Kopfzeile, Einbettung | ~430 | ~350 | WordCraft hat keine Andockstelle für einen zweiten Speicherort |
+| Hüllen web und nativ | ~110 | ~70 | Einbauen, Weckruf, Abfragen der Einbettung |
+| Tests | 1680 | ~150 | Prüfsatz des Kits gegen die echte Session |
+| Cargo | ~15 | ~15 | |
+| **Summe** | **~5400** | **~1200** | |
+
+Unter 400 Zeilen geht nur mit Andockstellen in Upstream: ein Speicherort-Anbieter für Datei-Menü und Dialoge, ein
+Haken in `Session::run` für Erweiterungen, Befehle aus einem Plugin registrierbar. Dann blieben Adapter und
+Einbau (~300). Das ist eine Entscheidung mit Upstream, nicht im Fork zu machen.
+
 
 ## 2. Wo das Plugin in der App hängt
 
