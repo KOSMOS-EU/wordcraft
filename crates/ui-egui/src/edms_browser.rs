@@ -8,16 +8,15 @@
 //! own results by id and leaves the rest for `edms.poll`. The picked file goes to the same
 //! follow-up as the system dialog's ([`AfterPick`]).
 
+use craft_opencore::session::picker::{Note, Picker, Purpose, own_place};
 use egui::{Align2, Rect, Sense, Ui, pos2, vec2};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::file_dialogs::{AfterPick, FileDialogRequest, open_filters};
 use crate::theme::{Tokens, regular};
 use crate::{WordApp, icons};
 
 const ROW: f32 = 24.0;
-/// At most this many entries are listed; a bigger folder shows the first ones and says so.
-const MAX_LISTED: usize = 5000;
 
 /// The picker while it is open, and the place it showed last (where it opens next time).
 #[derive(Default)]
@@ -29,187 +28,40 @@ pub(crate) struct State {
     pub(crate) export_to_edms: Option<bool>,
 }
 
-/// A space the user can browse.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Drive {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) kind: String,
-}
-
-/// One subfolder or file in the listing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Entry {
-    pub(crate) name: String,
-    /// The path in the drive (`/Folder/name.docx`).
-    pub(crate) path: String,
-    pub(crate) folder: bool,
-}
-
-/// A message under the listing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Note {
-    None,
-    NotFound(String),
-    Replace(String),
-    Error(String),
-}
-
-/// What the picker is waiting for from the EDMS.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Waiting {
-    Drives,
-    Listing {
-        drive: usize,
-        path: String,
-    },
-    /// The pick itself: open, fetch, save or export.
-    Pick,
-}
-
-/// What OK (or Enter, or a double click) did.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Step {
-    /// The picker stays open (it moved to a folder, is loading, or has something to say).
-    Stay,
-    /// The command to run for the pick.
-    Pick { command: &'static str, params: Value },
-}
-
-/// The open picker.
+/// The open picker: the kit's model and what to do with the pick.
 pub(crate) struct EdmsBrowser {
-    req: FileDialogRequest,
+    picker: Picker,
     pub(crate) after: AfterPick,
-    pub(crate) drives: Vec<Drive>,
-    /// The space shown, an index into `drives`.
-    pub(crate) drive: Option<usize>,
-    /// The folder shown, in the drive (`/`, `/Berichte`).
-    pub(crate) path: String,
-    pub(crate) entries: Vec<Entry>,
-    truncated: bool,
-    /// The highlighted entry, an index into `entries`.
-    selected: Option<usize>,
-    /// The file name field.
-    pub(crate) name: String,
-    /// The file types, as (label, extensions).
-    filters: Vec<(String, Vec<String>)>,
-    filter: usize,
-    waiting: Option<(u64, Waiting)>,
-    note: Note,
-    focus_name: bool,
 }
 
-/// Whether `name` has one of `exts` (case-insensitive); `*` takes any file.
-fn matches(name: &str, exts: &[String]) -> bool {
-    exts.iter().any(|e| e == "*") || name.rsplit_once('.').is_some_and(|(_, e)| exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
-}
+impl std::ops::Deref for EdmsBrowser {
+    type Target = Picker;
 
-/// `folder` + `name` as a path in the drive.
-fn join(folder: &str, name: &str) -> String {
-    let folder = folder.trim_end_matches('/');
-    format!("{folder}/{name}")
-}
-
-/// The folder above `path`; the root stays the root.
-fn parent(path: &str) -> String {
-    match path.trim_end_matches('/').rsplit_once('/') {
-        Some((above, _)) if !above.is_empty() => above.to_string(),
-        _ => "/".to_string(),
+    fn deref(&self) -> &Picker {
+        &self.picker
     }
 }
 
-/// The spaces of `edms.drives`' result: personal first, then projects, then the rest; the
-/// virtual ones (the shares jail) are left out.
-fn parse_drives(result: &Value) -> Vec<Drive> {
-    let mut drives: Vec<Drive> = result
-        .get("drives")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|d| {
-                    let id = d.get("id").and_then(Value::as_str)?.to_string();
-                    let kind = d.get("type").and_then(Value::as_str).unwrap_or("").to_string();
-                    if kind == "virtual" {
-                        return None;
-                    }
-                    let name = d.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or(id.as_str()).to_string();
-                    Some(Drive { id, name, kind })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let rank = |k: &str| match k {
-        "personal" => 0,
-        "project" => 1,
-        _ => 2,
-    };
-    drives.sort_by_cached_key(|d| (rank(&d.kind), d.name.to_lowercase()));
-    drives
-}
-
-/// The entries of `edms.list`'s result: folders first, then the files of the chosen types, each
-/// by name; at most `cap`.
-fn parse_entries(result: &Value, exts: &[String], cap: usize) -> (Vec<Entry>, bool) {
-    let mut entries: Vec<Entry> = result
-        .get("entries")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|e| {
-                    let name = e.get("name").and_then(Value::as_str).filter(|n| !n.is_empty())?.to_string();
-                    let folder = e.get("folder").and_then(Value::as_bool).unwrap_or(false);
-                    if !folder && !matches(&name, exts) {
-                        return None;
-                    }
-                    let path = e.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("/{name}"));
-                    Some(Entry { name, path, folder })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    entries.sort_by_cached_key(|e| (!e.folder, e.name.to_lowercase()));
-    let truncated = entries.len() > cap;
-    entries.truncate(cap);
-    (entries, truncated)
+impl std::ops::DerefMut for EdmsBrowser {
+    fn deref_mut(&mut self) -> &mut Picker {
+        &mut self.picker
+    }
 }
 
 impl EdmsBrowser {
     pub(crate) fn new(req: FileDialogRequest, after: AfterPick) -> Self {
-        let (name, filters) = match &req {
+        let picker = match &req {
             FileDialogRequest::Open { purpose } | FileDialogRequest::OpenMany { purpose } => {
-                (String::new(), open_filters(purpose).iter().map(|(l, e)| ((*l).to_string(), e.iter().map(|x| (*x).to_string()).collect())).collect())
+                let filters = open_filters(purpose).iter().map(|(l, e)| ((*l).to_string(), e.iter().map(|x| (*x).to_string()).collect())).collect();
+                let purpose = if matches!(after, AfterPick::Picture | AfterPick::Recipients) { Purpose::Fetch } else { Purpose::Open };
+                Picker::new(purpose, String::new(), filters)
             }
             FileDialogRequest::Save { name, .. } => {
-                let ext = name.rsplit_once('.').map(|(_, e)| e).filter(|e| !e.is_empty());
-                let mut f: Vec<(String, Vec<String>)> = ext.map(|e| (format!("*.{e}"), vec![e.to_string()])).into_iter().collect();
-                f.push(("All files".into(), vec!["*".into()]));
-                (name.clone(), f)
+                let purpose = if matches!(after, AfterPick::Export { .. }) { Purpose::Export } else { Purpose::SaveAs };
+                Picker::new(purpose, name.clone(), Picker::save_filters(name))
             }
         };
-        EdmsBrowser {
-            req,
-            after,
-            drives: Vec::new(),
-            drive: None,
-            path: "/".into(),
-            entries: Vec::new(),
-            truncated: false,
-            selected: None,
-            name,
-            filters,
-            filter: 0,
-            waiting: None,
-            note: Note::None,
-            focus_name: true,
-        }
-    }
-
-    fn exts(&self) -> &[String] {
-        self.filters.get(self.filter).map_or(&[], |(_, e)| e.as_slice())
-    }
-
-    fn saving(&self) -> bool {
-        matches!(self.req, FileDialogRequest::Save { .. })
+        EdmsBrowser { picker, after }
     }
 
     fn title(&self) -> &'static str {
@@ -230,96 +82,17 @@ impl EdmsBrowser {
             _ => "Open",
         }
     }
-
-    fn drive_id(&self) -> Option<&str> {
-        self.drive.and_then(|i| self.drives.get(i)).map(|d| d.id.as_str())
-    }
-
-    /// The listing is being fetched, or the pick is under way.
-    pub(crate) fn busy(&self) -> bool {
-        self.waiting.is_some()
-    }
-
-    /// The highlighted entry, if it is a folder.
-    fn selected_folder(&self) -> Option<&Entry> {
-        self.selected.and_then(|i| self.entries.get(i)).filter(|e| e.folder)
-    }
-
-    /// A click on an entry: highlight it, and a file's name goes into the file name field.
-    fn select(&mut self, i: usize) {
-        self.selected = Some(i);
-        if let Some(e) = self.entries.get(i).filter(|e| !e.folder) {
-            self.name = e.name.clone();
-        }
-        self.note = Note::None;
-    }
-
-    /// OK: a highlighted folder, or a typed folder, is opened; otherwise the typed name is the
-    /// pick. Save adds the chosen type's extension to a name without one and asks once more
-    /// before replacing a file; Open wants a file that is listed.
-    pub(crate) fn accept(&mut self) -> Step {
-        if self.busy() {
-            return Step::Stay;
-        }
-        if let Some(folder) = self.selected_folder().map(|e| e.path.clone()) {
-            return self.go(folder);
-        }
-        let Some(drive) = self.drive_id().map(str::to_string) else { return Step::Stay };
-        let typed = self.name.trim().to_string();
-        if typed.is_empty() {
-            return Step::Stay;
-        }
-        if let Some(folder) = self.entries.iter().find(|e| e.folder && e.name == typed).map(|e| e.path.clone()) {
-            self.name.clear();
-            return self.go(folder);
-        }
-        let mut name = typed;
-        if self.saving() {
-            if !name.contains('.')
-                && let Some(ext) = self.exts().first().filter(|e| e.as_str() != "*")
-            {
-                name = format!("{name}.{ext}");
-            }
-            // Replacing takes a second Save on the same name: the listing says it exists, or the
-            // server said so (conflict) to the first attempt.
-            let confirmed = matches!(&self.note, Note::Replace(n) if *n == name);
-            let exists = self.entries.iter().any(|e| !e.folder && e.name == name);
-            if exists && !confirmed {
-                self.note = Note::Replace(name);
-                return Step::Stay;
-            }
-            let (command, params) = match &self.after {
-                AfterPick::Export { .. } => ("edms.export", json!({"drive": drive, "path": self.path, "name": name, "overwrite": confirmed})),
-                _ => ("edms.saveAs", json!({"drive": drive, "path": self.path, "name": name, "overwrite": confirmed, "switch": true})),
-            };
-            return Step::Pick { command, params };
-        }
-        if !self.entries.iter().any(|e| !e.folder && e.name == name) {
-            self.note = Note::NotFound(name);
-            return Step::Stay;
-        }
-        let path = join(&self.path, &name);
-        let command = match &self.after {
-            AfterPick::Picture | AfterPick::Recipients => "edms.fetch",
-            _ => "edms.open",
-        };
-        Step::Pick { command, params: json!({"drive": drive, "path": path}) }
-    }
-
-    /// Move to `folder` in the shown drive: the listing is asked for.
-    fn go(&mut self, folder: String) -> Step {
-        self.path = folder;
-        self.selected = None;
-        self.note = Note::None;
-        self.entries.clear();
-        Step::Stay
-    }
 }
 
 /// Whether the picker can finish this follow-up; the others (fonts, Word sources, a path for
 /// another dialog, Compare) stay with local files.
 pub(crate) fn supports(after: &AfterPick) -> bool {
     matches!(after, AfterPick::OpenDocument { .. } | AfterPick::Picture | AfterPick::Recipients | AfterPick::SaveAs { .. } | AfterPick::Export { .. })
+}
+
+/// The app's command path for the picker.
+fn runner(session: &mut wordcraft_engine::Session) -> impl FnMut(&str, &Value) -> Result<Value, String> + '_ {
+    |command, params| session.run(command, params).map_err(|e| e.to_string())
 }
 
 impl WordApp {
@@ -358,10 +131,7 @@ impl WordApp {
             return false;
         }
         let mut b = Box::new(EdmsBrowser::new(req, after));
-        match self.session.run("edms.drives", &json!({})) {
-            Ok(v) => b.waiting = v.get("pending").and_then(Value::as_u64).map(|id| (id, Waiting::Drives)),
-            Err(e) => b.note = Note::Error(e.to_string()),
-        }
+        b.start(&mut runner(&mut self.session));
         self.edms_browser.open = Some(b);
         true
     }
@@ -406,20 +176,14 @@ impl WordApp {
     /// Fetch the listing of the picker's folder (after a move, or when the drives arrived).
     fn edms_browser_list(&mut self) {
         let Some(b) = self.edms_browser.open.as_mut() else { return };
-        let Some(drive) = b.drive else { return };
-        let Some(id) = b.drives.get(drive).map(|d| d.id.clone()) else { return };
-        let path = b.path.clone();
-        match self.session.run("edms.list", &json!({"drive": id, "path": path})) {
-            Ok(v) => b.waiting = v.get("pending").and_then(Value::as_u64).map(|id| (id, Waiting::Listing { drive, path: b.path.clone() })),
-            Err(e) => b.note = Note::Error(e.to_string()),
-        }
+        b.list(&mut runner(&mut self.session));
     }
 
     /// Close the picker without a pick and finish what it was for as cancelled.
     pub(crate) fn cancel_edms_browser(&mut self) {
         let Some(b) = self.edms_browser.open.take() else { return };
-        if let Some(d) = b.drive.and_then(|i| b.drives.get(i)) {
-            self.edms_browser.last = Some((d.id.clone(), b.path.clone()));
+        if let Some(place) = b.place() {
+            self.edms_browser.last = Some(place);
         }
         if let Err(e) = self.finish_pick(b.after, None) {
             log::warn!("edms browser: {e}");
@@ -433,21 +197,14 @@ impl WordApp {
     /// picker says what went wrong and stays.
     fn edms_browser_picked(&mut self, result: Value) {
         let Some(mut b) = self.edms_browser.open.take() else { return };
-        if result.get("ok").and_then(Value::as_bool) != Some(true) {
-            let code = result.pointer("/error/code").and_then(Value::as_str).unwrap_or("");
-            let message = result.pointer("/error/message").and_then(Value::as_str).unwrap_or("the EDMS didn't answer").to_string();
-            b.note = match code {
-                "conflict" if b.saving() => Note::Replace(result.get("name").and_then(Value::as_str).unwrap_or(b.name.trim()).to_string()),
-                "notFound" => Note::NotFound(b.name.trim().to_string()),
-                _ => Note::Error(message),
-            };
+        if !b.picked(&result) {
             self.edms_browser.open = Some(b);
             return;
         }
-        if let Some(d) = b.drive.and_then(|i| b.drives.get(i)) {
-            self.edms_browser.last = Some((d.id.clone(), b.path.clone()));
+        if let Some(place) = b.place() {
+            self.edms_browser.last = Some(place);
         }
-        let name = result.get("name").and_then(Value::as_str).unwrap_or(b.name.trim()).to_string();
+        let name = b.picked_name(&result);
         match &b.after {
             AfterPick::Picture | AfterPick::Recipients => {
                 let bytes = result.get("data").and_then(Value::as_str).and_then(wordcraft_engine::cmd::insert::base64_decode).unwrap_or_default();
@@ -481,45 +238,13 @@ impl WordApp {
 /// Pick up the picker's answers (every frame, from `logic`, after `edms_pump`).
 pub(crate) fn poll(app: &mut WordApp) {
     let Some(b) = app.edms_browser.open.as_mut() else { return };
-    let Some((id, what)) = b.waiting.clone() else { return };
+    let Some(id) = b.waiting_for() else { return };
     let Some(result) = app.session.edms.take_result(id) else { return };
-    b.waiting = None;
-    let ok = result.get("ok").and_then(Value::as_bool) == Some(true);
-    match what {
-        Waiting::Drives => {
-            if !ok {
-                b.note = Note::Error(result.pointer("/error/message").and_then(Value::as_str).unwrap_or("the EDMS didn't answer").to_string());
-                return;
-            }
-            b.drives = parse_drives(&result);
-            // Where it was last, else the document's own space, else the first (personal) space.
-            let last = app.edms_browser.last.clone();
-            let own = app.session.edms.document(app.session.document_id()).map(|d| (d.location.drive_id.clone(), parent(&d.location.path)));
-            let start = last.or(own).and_then(|(drive, path)| b.drives.iter().position(|d| d.id == drive).map(|i| (i, path)));
-            let (drive, path) = start.unwrap_or((0, "/".into()));
-            if b.drives.is_empty() {
-                b.note = Note::Error(tl!("No spaces to browse.").to_string());
-                return;
-            }
-            b.drive = Some(drive);
-            b.path = path;
-            app.edms_browser_list();
-        }
-        Waiting::Listing { drive, path } => {
-            // A listing for a folder the user has since left is dropped.
-            if b.drive != Some(drive) || b.path != path {
-                app.edms_browser_list();
-                return;
-            }
-            if !ok {
-                b.note = Note::Error(result.pointer("/error/message").and_then(Value::as_str).unwrap_or("this folder can't be read").to_string());
-                return;
-            }
-            let (entries, truncated) = parse_entries(&result, b.exts(), MAX_LISTED);
-            b.entries = entries;
-            b.truncated = truncated;
-        }
-        Waiting::Pick => app.edms_browser_picked(result),
+    // Where it was last, else the document's own space, else the first (personal) space.
+    let start = app.edms_browser.last.clone().or_else(|| own_place(&app.session.edms, app.session.document_id()));
+    let picked = b.answer(result, start, &mut runner(&mut app.session));
+    if let Some(picked) = picked {
+        app.edms_browser_picked(picked);
     }
 }
 
@@ -593,17 +318,7 @@ enum Done {
 /// OK in the picker: move, or run the pick and wait for its answer.
 fn accept(app: &mut WordApp) {
     let Some(b) = app.edms_browser.open.as_mut() else { return };
-    match b.accept() {
-        Step::Stay => {
-            if b.entries.is_empty() && !b.busy() && b.note == Note::None {
-                app.edms_browser_list();
-            }
-        }
-        Step::Pick { command, params } => match app.session.run(command, &params) {
-            Ok(v) => b.waiting = v.get("pending").and_then(Value::as_u64).map(|id| (id, Waiting::Pick)),
-            Err(e) => b.note = Note::Error(e.to_string()),
-        },
-    }
+    b.accept_and_run(&mut runner(&mut app.session));
 }
 
 /// The picker's contents; `Some` when something is to be done once the frame is drawn.
@@ -625,12 +340,7 @@ fn body(ui: &mut Ui, b: &mut EdmsBrowser, t: &Tokens, fit: &Fit) -> Option<Done>
                 })
                 .response
                 .accessible_name(tl!("Spaces"));
-            if chosen != b.drive {
-                b.drive = chosen;
-                b.path = "/".into();
-                b.entries.clear();
-                b.selected = None;
-                b.note = Note::None;
+            if b.choose_drive(chosen) {
                 done = Some(Done::Moved);
             }
         } else {
@@ -667,12 +377,7 @@ fn body(ui: &mut Ui, b: &mut EdmsBrowser, t: &Tokens, fit: &Fit) -> Option<Done>
                                 icons::paint(ui.painter(), icon, if d.kind == "personal" { "homeFolder" } else { "folder" }, t.icon, t.accent);
                                 let name = d.name.clone();
                                 let resp = if row_text(ui, r, &name, t, rtl) { resp.on_hover_text(&name) } else { resp };
-                                if resp.clicked() && b.drive != Some(i) {
-                                    b.drive = Some(i);
-                                    b.path = "/".into();
-                                    b.entries.clear();
-                                    b.selected = None;
-                                    b.note = Note::None;
+                                if resp.clicked() && b.choose_drive(Some(i)) {
                                     done = Some(Done::Moved);
                                 }
                             }
@@ -685,10 +390,7 @@ fn body(ui: &mut Ui, b: &mut EdmsBrowser, t: &Tokens, fit: &Fit) -> Option<Done>
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 if icon_button(ui, t, "chevronUp", tl!("Up one level"), b.path != "/" && !b.busy()) {
-                    b.path = parent(&b.path);
-                    b.entries.clear();
-                    b.selected = None;
-                    b.note = Note::None;
+                    b.up();
                     done = Some(Done::Moved);
                 }
                 let where_ = match b.drive.and_then(|i| b.drives.get(i)) {
@@ -746,6 +448,7 @@ fn body(ui: &mut Ui, b: &mut EdmsBrowser, t: &Tokens, fit: &Fit) -> Option<Done>
                 Note::Replace(name) => {
                     Some((crate::i18n::fmt(tl!("{name} already exists. Choose Save again to replace it."), &[("name", name)]), t.red))
                 }
+                Note::NoDrives => Some((tl!("No spaces to browse.").to_string(), t.red)),
                 Note::Error(e) => Some((e.clone(), t.red)),
                 Note::None if b.truncated => {
                     Some((crate::i18n::fmt(tl!("Showing the first {count} items."), &[("count", &b.entries.len().to_string())]), t.text_dim))
@@ -773,8 +476,7 @@ fn body(ui: &mut Ui, b: &mut EdmsBrowser, t: &Tokens, fit: &Fit) -> Option<Done>
             b.focus_name = false;
         }
         if r.changed() {
-            b.selected = None;
-            b.note = Note::None;
+            b.name_edited();
         }
         let before = b.filter;
         let current = b.filters.get(b.filter).map(|(l, _)| tl!(l.as_str()).to_string()).unwrap_or_default();
@@ -782,8 +484,9 @@ fn body(ui: &mut Ui, b: &mut EdmsBrowser, t: &Tokens, fit: &Fit) -> Option<Done>
             .selected_text(current)
             .width(150.0)
             .show_ui(ui, |ui| {
-                for (i, (l, _)) in b.filters.iter().enumerate() {
-                    ui.selectable_value(&mut b.filter, i, tl!(l.as_str()));
+                let picker: &mut Picker = b;
+                for (i, (l, _)) in picker.filters.iter().enumerate() {
+                    ui.selectable_value(&mut picker.filter, i, tl!(l.as_str()));
                 }
             })
             .response
@@ -848,6 +551,8 @@ mod tests {
     use super::*;
     use crate::Services;
     use craft_opencore::edms::{Client, HttpResponse, Method, RecordingTransport};
+    use craft_opencore::session::picker::{Entry, Step, matches};
+    use serde_json::json;
     use wordcraft_engine::Session;
 
     const DRIVE: &str = "b894e89e-a7fd-4385-92fc-b5e0bb2659fd$8c9cde70-836d-4eda-81bf-99102e838af1";
