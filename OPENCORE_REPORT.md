@@ -30,7 +30,13 @@ Verlauf während Stufe 0 (gemessen mit `git diff --shortstat` gegen Upstream `ma
 | `62b183f6` (22.11.) | 51 Dateien, 6248 Zeilen dazu | Bereich `session`: Zustand, Pumpe, Befehle `edms.*` (945 Zeilen aus `edms.rs` und `cmd/edms.rs`); WordCraft behält den Adapter (`DocumentHost`, 126 Zeilen) und das Vorschalten der Zusammenarbeit beim Speichern |
 | `89cb287a` (23.11.) | 45 Dateien, 5427 Zeilen dazu | Features `web` und `native`: fetch, Ereignisstrom, Signal-Sockets, `nocache` (766 Zeilen); WordCraft gibt nur noch den Weckruf aus egui (`craft_opencore::egui::wake`) |
 | `0e7386b3` (23.11.) | 44 Dateien, 4449 Zeilen dazu | Bereich `session::collab`: Journal, Rücknahme, Konfliktregel, Abgleich, Speichern über den Master, Befehle `signal.*`; WordCraft behält den Adapter `CollabHost` (`signal.rs` 1254 → 380: Momentaufnahme, Anker als Absatzbereich, Zustand als docx, Bildrahmen) |
-| offen | | Ortswähler, Bildrahmen (`signal_frame.rs`, für jede App mit Bildern), Tests in den Prüfsatz |
+| `65def218` (23.11.) | 44 Dateien, 4169 Zeilen dazu | Bereich `session::picker`: Modell und Ablauf des Ortswählers; WordCraft zeichnet ihn unverändert mit seinen Bedienelementen (`edms_browser.rs` 1048 → 753) |
+| offen | | Bildrahmen (`signal_frame.rs`, für jede App mit Bildern), Tests in den Prüfsatz |
+
+Grundsatz beim Herauslösen (Auftraggeber 23.11.): Das Verhalten der App bleibt identisch, nur die Technik dahinter
+wird zerteilt. Jeder Schritt wurde Zeile für Zeile gegen den alten Code verglichen; gefundene Abweichungen
+(Auswahl nach einer Rücknahme, eine Fehlermeldung, ein zusätzliches Neu-Layout, zwei Log-Zeilen) sind behoben.
+Aussehen bleibt bei der App: das Kit liefert dort Modell und Ablauf, keine Ersatz-Bedienelemente.
 
 ### Wie klein kann der Patch werden (Bewertung 23.11.2026)
 
