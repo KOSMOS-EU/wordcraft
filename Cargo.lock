@@ -1120,9 +1120,16 @@ dependencies = [
  "craft-dav",
  "craft-xml",
  "egui",
+ "js-sys",
+ "log",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tungstenite",
+ "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -6954,8 +6961,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tungstenite",
- "ureq",
  "windows",
  "winit",
  "winresource",

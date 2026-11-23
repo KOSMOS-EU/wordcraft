@@ -24,10 +24,8 @@ egui = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 tempfile = "3"
-# kosmos: Craft Signal nativ, der WebSocket zum Relais und das Ticket per HTTP (`signal_transport.rs`).
-craft-opencore = { workspace = true }
-tungstenite = "0.26"
-ureq = "3"
+# kosmos: the OpenCore kit, Craft Signal over its native transport.
+craft-opencore = { workspace = true, features = ["native", "egui"] }
 log = { workspace = true }
 chrono = { workspace = true }
 

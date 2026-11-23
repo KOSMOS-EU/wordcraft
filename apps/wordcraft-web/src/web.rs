@@ -13,17 +13,7 @@ const DOC_EXTS: &[&str] =
     &["docx", "docm", "dotx", "dotm", "doc", "dot", "odt", "ott", "fodt", "rtf", "txt", "md", "html", "htm", "mht", "mhtml", "tex", "json", "xml"];
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "wmf", "emf"];
 const RECIPIENT_EXTS: &[&str] = wordcraft_engine::cmd::mailings::RECIPIENT_EXTENSIONS;
-mod edms_events;
-mod edms_transport;
 mod font_store;
-mod signal_transport;
-
-/// kosmos: `url` kept out of the browser's cache: `init` gets `no-store`, the URL the time where the
-/// server allows it ([`crate::nocache`]).
-fn uncached(url: &str, init: &web_sys::RequestInit) -> String {
-    init.set_cache(web_sys::RequestCache::NoStore);
-    crate::nocache::stamped(url, js_sys::Date::now() as u64)
-}
 const CANVAS_ID: &str = "wordcraft_canvas";
 const LOADING_ID: &str = "wordcraft_loading";
 
@@ -81,13 +71,11 @@ pub fn start() {
                     let doc = if sample { wordcraft_engine::sample::sample_document() } else { wordcraft_engine::blank_document(&region) };
                     let mut session = Session::new(doc);
                     session.system_region = region;
-                    // kosmos: the EDMS module over the browser's fetch; the host page connects it
-                    // with its token (`edms.connect`) and names the document's place (`edms.adopt`).
-                    session.edms.install(Box::new(craft_opencore::edms::Client::new(edms_transport::FetchTransport::new(cc.egui_ctx.clone()))));
-                    // kosmos: Craft Signal over the browser's WebSocket; `signal.connect` joins.
-                    session
-                        .signal
-                        .install(Box::new(craft_opencore::signal::Client::new(signal_transport::WebSocketTransport::new(cc.egui_ctx.clone()))));
+                    // kosmos: the OpenCore kit's browser transports. The host page connects the EDMS with its
+                    // token (`edms.connect`) and names the document's place (`edms.adopt`); `signal.connect` joins.
+                    let wake = craft_opencore::egui::wake(&cc.egui_ctx);
+                    session.edms.install(Box::new(craft_opencore::edms::Client::new(craft_opencore::web::FetchTransport::new(wake.clone()))));
+                    session.signal.install(Box::new(craft_opencore::signal::Client::new(craft_opencore::web::WebSocketTransport::new(wake.clone()))));
                     let messages = Rc::new(RefCell::new(Vec::new()));
                     let mut services = services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone(), messages.clone());
                     if let Some(bridge) = &app_bridge {
@@ -130,7 +118,7 @@ pub fn start() {
                         // `?localFiles=0`: server-only, every file goes through the EDMS.
                         app.embed.local_files = query_flag("localFiles").unwrap_or(true);
                     }
-                    let edms_events = edms_events::EdmsEvents::new(cc.egui_ctx.clone());
+                    let edms_events = craft_opencore::web::EdmsEvents::new(wake);
                     Ok(Box::new(WebShell { app, inbox, messages, prefs, edms_events }))
                 }),
             )
@@ -177,7 +165,7 @@ struct WebShell {
     messages: Rc<RefCell<Vec<String>>>,
     prefs: crate::prefs::PrefsSync,
     /// kosmos: the app's own reader of the server's events for the EDMS module.
-    edms_events: edms_events::EdmsEvents,
+    edms_events: craft_opencore::web::EdmsEvents,
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
@@ -198,7 +186,11 @@ impl eframe::App for WebShell {
         for msg in msgs {
             self.app.status(msg);
         }
-        self.edms_events.frame(&mut self.app);
+        for params in self.edms_events.frame(&self.app.session.edms) {
+            if let Err(error) = self.app.run("edms.event", params) {
+                log::debug!("edms events: not taken: {error}");
+            }
+        }
         self.app.logic(ctx);
         // Store changed preferences straight away: a reload or closed tab runs no exit code (#2132).
         if let Some(json) = self.prefs.changed(&self.app) {
