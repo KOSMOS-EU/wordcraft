@@ -25,7 +25,6 @@ pub mod ribbon;
 pub mod sample;
 mod session;
 pub mod signal;
-mod signal_frame;
 pub(crate) mod snapshot;
 pub mod speech;
 pub mod strict;

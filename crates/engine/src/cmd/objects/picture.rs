@@ -201,7 +201,7 @@ pub(super) fn adjust_media(
     // frame), and the edit is made again on the picture when it arrives.
     let standing_in = s.signal_frames.stands_in(base, &bytes);
     if standing_in {
-        crate::signal_frame::png_comment(&mut png, &craft_opencore::signal::blobs::hash_of(&bytes));
+        craft_opencore::session::collab::stand_in::png_comment(&mut png, &craft_opencore::signal::blobs::hash_of(&bytes));
     }
     let key = s.doc.add_media(png, "png");
     if standing_in && let Some(made) = s.doc.media.get(&key).cloned() {

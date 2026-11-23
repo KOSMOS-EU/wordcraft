@@ -695,7 +695,7 @@ fn two_pictures_of_one_size_get_a_frame_each_and_each_its_own_picture() {
 
 #[test]
 fn a_frame_is_a_readable_picture_of_the_given_size_in_each_format() {
-    use crate::signal_frame::{FrameFormat, MAX_FRAME_PIXELS, build};
+    use craft_opencore::session::collab::stand_in::{FrameFormat, MAX_FRAME_PIXELS, build};
     let (one, other) = (blobs::hash_of(b"one"), blobs::hash_of(b"other"));
     for format in [FrameFormat::Png, FrameFormat::Jpeg, FrameFormat::Gif] {
         let frame = build(format, (321, 123), &one).unwrap();

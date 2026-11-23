@@ -9,13 +9,13 @@
 
 use std::sync::Arc;
 
+use craft_opencore::session::collab::stand_in::{self, FrameFormat};
 use craft_opencore::session::collab::{self, CollabHost, SignalSession};
 use craft_opencore::signal::{Attachment, ConnectRequest, Hash, PreviewKind};
 use serde_json::{Value, json};
 use wordcraft_doc::{Document, Path, StoryRef};
 
 use crate::edms::to_cmd;
-use crate::signal_frame::{self, FrameFormat};
 use crate::snapshot::EditSnapshot;
 use crate::{CmdError, Selection, Session};
 
@@ -43,64 +43,12 @@ fn touched(anchor: &Value) -> Option<Touched> {
     (first.story == last.story).then_some(Touched { story: first.story, from: first.path, to: last.path })
 }
 
-/// An empty picture standing in the document for content that is still on its way.
-struct Frame {
-    /// The blob it stands for (the picture as the command carries it: base64).
-    hash: Hash,
-    /// Where it is in the document's media.
-    media: String,
-    /// Its bytes, to tell it from what may have taken that name since.
-    stand_in: Arc<Vec<u8>>,
-}
-
 /// A change of a picture's pixels (Picture Format), kept to be made again on the picture itself.
 pub(crate) type PictureEdit = Box<dyn Fn(image::DynamicImage) -> Result<image::DynamicImage, CmdError>>;
 
-/// A picture made from a frame by Picture Format, here or by another participant who already
-/// had the picture: when the picture arrives, the same change is made to it.
-struct Derived {
-    /// The media it was made from (a frame, or another derived picture) and its bytes then.
-    base: String,
-    base_bytes: Arc<Vec<u8>>,
-    /// The media it is and its bytes now.
-    media: String,
-    bytes: Arc<Vec<u8>>,
-    edit: PictureEdit,
-}
-
-/// The frames in the document whose pictures are still on their way, and what Picture Format made of them.
-#[derive(Default)]
-pub struct PictureFrames {
-    frames: Vec<Frame>,
-    derived: Vec<Derived>,
-    /// Counts the pictures whose bytes were exchanged under their name (a frame for its picture).
-    /// Whoever caches drawn pages by the names of their pictures needs it in the key: the name stays.
-    media_epoch: u64,
-}
-
-impl PictureFrames {
-    /// How many pictures in the document are shown as their frame.
-    pub fn framed(&self) -> usize {
-        self.frames.len()
-    }
-
-    /// See the field: changes whenever a picture's bytes changed under the same media name.
-    pub fn media_epoch(&self) -> u64 {
-        self.media_epoch
-    }
-
-    /// Whether the media `key` with `bytes` is a frame, or was made from one: its picture is
-    /// still on its way.
-    pub(crate) fn stands_in(&self, key: &str, bytes: &[u8]) -> bool {
-        self.frames.iter().any(|frame| frame.media == key && frame.stand_in.as_slice() == bytes)
-            || self.derived.iter().any(|derived| derived.media == key && derived.bytes.as_slice() == bytes)
-    }
-
-    /// Picture Format made `media` from `base` while `base` stood in for a picture.
-    pub(crate) fn note_derived(&mut self, base: &str, base_bytes: Arc<Vec<u8>>, media: &str, bytes: Arc<Vec<u8>>, edit: PictureEdit) {
-        self.derived.push(Derived { base: base.to_string(), base_bytes, media: media.to_string(), bytes, edit });
-    }
-}
+/// The frames in the document whose pictures are still on their way, and what Picture Format made of them
+/// (the kit's book of frames, `session::collab::frames`).
+pub type PictureFrames = collab::PictureFrames<PictureEdit>;
 
 /// Commands that stay local beyond the kit's (files, the modules, tools, view, undo): the ones that
 /// replace the document or make other files.
@@ -229,7 +177,8 @@ impl CollabHost for Session {
         if command != "insert.picture" || key != "data" {
             return None;
         }
-        signal_frame::describe(text).map(|(format, pixels)| (format.mime().to_string(), pixels))
+        let bytes = crate::cmd::insert::base64_decode(text)?;
+        stand_in::describe(&bytes).map(|(format, pixels)| (format.mime().to_string(), pixels))
     }
 
     fn held(&self, attachment: &Attachment) -> Option<String> {
@@ -242,7 +191,7 @@ impl CollabHost for Session {
             .ok_or_else(|| {
                 format!("`{}` has no preview that could be shown (a box of {}×{})", attachment.key, attachment.width, attachment.height)
             })?;
-        let stand_in = signal_frame::build(format, (attachment.width, attachment.height), &attachment.hash)?;
+        let stand_in = stand_in::build(format, (attachment.width, attachment.height), &attachment.hash)?;
         Ok((crate::cmd::insert::base64_encode(&stand_in), stand_in))
     }
 
@@ -250,11 +199,10 @@ impl CollabHost for Session {
     fn stand_ins_placed(&mut self, placed: Vec<(Hash, Vec<u8>)>) {
         for (hash, stand_in) in placed {
             let Some((media, bytes)) = self.doc.media.iter().find(|(_, bytes)| bytes.as_slice() == stand_in.as_slice()) else { continue };
-            if self.signal_frames.frames.iter().any(|frame| frame.hash == hash && frame.media == *media) {
+            if !self.signal_frames.place(hash, media, bytes.clone()) {
                 continue;
             }
             let entry = json!({"event": "framed", "media": media, "hash": craft_opencore::signal::blobs::hex(&hash)});
-            self.signal_frames.frames.push(Frame { hash, media: media.clone(), stand_in: bytes.clone() });
             self.signal.note(entry.clone());
             self.push_ui_request(json!({"signal": entry}));
         }
@@ -263,9 +211,7 @@ impl CollabHost for Session {
     /// The picture `hash` is complete here: put it where its frames are, in the document, in the undo
     /// and redo steps and in the journal's snapshots. Returns how many frames it filled.
     fn content_arrived(&mut self, hash: &Hash, content: Option<&[u8]>, snapshots: &mut [&mut Box<EditSnapshot>]) -> usize {
-        let (waiting, rest): (Vec<Frame>, Vec<Frame>) =
-            std::mem::take(&mut self.signal_frames.frames).into_iter().partition(|frame| frame.hash == *hash);
-        self.signal_frames.frames = rest;
+        let waiting = self.signal_frames.take_waiting(hash);
         if waiting.is_empty() {
             return 0;
         }
@@ -293,8 +239,7 @@ impl CollabHost for Session {
     }
 
     fn collab_reset(&mut self) {
-        self.signal_frames.frames.clear();
-        self.signal_frames.derived.clear();
+        self.signal_frames.clear();
     }
 }
 
@@ -357,7 +302,7 @@ impl Session {
             replaced += snapshot.replace_media(key, stand_in, content);
         }
         if replaced > 0 {
-            self.signal_frames.media_epoch = self.signal_frames.media_epoch.wrapping_add(1);
+            self.signal_frames.media_changed();
         }
         replaced
     }
@@ -367,11 +312,7 @@ impl Session {
     fn signal_redo_derived(&mut self, media: &str, stand_in: Arc<Vec<u8>>, content: Arc<Vec<u8>>, snapshots: &mut [&mut Box<EditSnapshot>]) {
         let mut arrived = vec![(media.to_string(), stand_in, content)];
         while let Some((base, base_before, base_now)) = arrived.pop() {
-            let (waiting, rest): (Vec<Derived>, Vec<Derived>) = std::mem::take(&mut self.signal_frames.derived)
-                .into_iter()
-                .partition(|derived| derived.base == base && *derived.base_bytes == *base_before);
-            self.signal_frames.derived = rest;
-            for derived in waiting {
+            for derived in self.signal_frames.take_derived(&base, &base_before) {
                 let made = wordcraft_geom::picture::decode(&base_now, wordcraft_geom::MAX_DECODED_BYTES)
                     .map_err(|e| e.to_string())
                     .and_then(|picture| (derived.edit)(picture).map_err(|e| e.to_string()))
