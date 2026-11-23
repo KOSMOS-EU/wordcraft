@@ -87,6 +87,8 @@ pub struct Session {
     pub edms: craft_opencore::session::EdmsSession,
     /// kosmos: Craft Signal, the session's seat in a collaboration (`signal.*`).
     pub signal: crate::signal::SignalState,
+    /// kosmos: pictures of a collaboration that are still on their way, shown as frames.
+    pub signal_frames: crate::signal::PictureFrames,
     /// Author name for comments and tracked changes.
     pub author: String,
     /// Initials for comments (File › Options › General); empty = the name's initials.

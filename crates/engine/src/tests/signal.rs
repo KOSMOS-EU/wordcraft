@@ -56,7 +56,7 @@ fn joined_waiting_for_the_state(s: &mut Session, transport: &RecordingTransport,
         master,
         mode: 1,
         app: "wordcraft".into(),
-        app_version: super::super::cmd::signal::APP_VERSION.into(),
+        app_version: crate::signal::APP_VERSION.into(),
         reason: String::new(),
         lock: if rank == 0 { "L".into() } else { String::new() },
     };
@@ -654,11 +654,11 @@ fn a_framed_picture_is_swapped_in_when_it_arrives_also_in_the_undo_steps() {
     s.run("text.insert", &json!({"text": "Bildunterschrift"})).unwrap();
     transport.take_sent();
 
-    assert_eq!(s.signal.media_epoch(), 0);
+    assert_eq!(s.signal_frames.media_epoch(), 0);
     deliver_blob(&transport, picture.as_bytes());
     s.signal_pump();
     assert_eq!(s.doc.media.get(&key).map(|bytes| bytes.as_slice()), Some(png.as_slice()), "the picture under the frame's name");
-    assert!(s.signal.media_epoch() > 0, "a drawn page with this picture must not be taken from the cache");
+    assert!(s.signal_frames.media_epoch() > 0, "a drawn page with this picture must not be taken from the cache");
     assert_eq!(s.doc.media.len(), 1);
     assert_eq!(crate::cmd::objects::original_size(&s, &key), framed_size, "the same size as its frame");
     assert!(s.signal.outstanding().is_empty());

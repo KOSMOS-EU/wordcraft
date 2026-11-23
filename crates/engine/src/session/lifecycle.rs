@@ -106,6 +106,7 @@ impl Session {
             registry,
             edms: Default::default(),
             signal: Default::default(),
+            signal_frames: Default::default(),
             author: "WordCraft User".into(),
             initials: String::new(),
             painter: None,

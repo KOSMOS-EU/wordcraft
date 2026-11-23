@@ -97,7 +97,7 @@ pub(super) fn page_key(app: &mut WordApp, layout: &std::sync::Arc<DocLayout>, i:
     let mut h = std::collections::hash_map::DefaultHasher::new();
     // kosmos: a picture of the collaboration can get its bytes under the name it already had (its
     // frame is swapped for it); the layout only knows the name, so the swaps count here too.
-    (view, scale_px.to_bits(), app.canvas.page_keys.content(layout, i), app.session.signal.media_epoch()).hash(&mut h);
+    (view, scale_px.to_bits(), app.canvas.page_keys.content(layout, i), app.session.signal_frames.media_epoch()).hash(&mut h);
     h.finish()
 }
 

@@ -38,7 +38,6 @@ pub mod protect;
 pub mod references;
 pub mod review;
 pub mod shape_fill;
-pub mod signal;
 pub mod smart_art;
 pub mod speech;
 pub mod table;
@@ -87,7 +86,6 @@ pub fn registry() -> Registry {
     v.extend(review::specs());
     v.extend(file::specs());
     v.extend(edms::specs());
-    v.extend(signal::specs());
     v.extend(options::specs());
     v.extend(packs::specs());
     v.extend(design::specs());

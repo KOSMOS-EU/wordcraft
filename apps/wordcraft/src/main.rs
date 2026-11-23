@@ -614,7 +614,9 @@ fn main() -> eframe::Result {
             let mut session = Session::new(doc);
             session.system_region = region;
             // kosmos: Craft Signal over the native transport (ticket by HTTP, WebSocket to the relay).
-            session.signal.install(Box::new(craft_opencore::signal::Client::new(craft_opencore::native::NativeTransport::new(craft_opencore::egui::wake(&cc.egui_ctx)))));
+            session.signal.install(Box::new(craft_opencore::signal::Client::new(craft_opencore::native::NativeTransport::new(
+                craft_opencore::egui::wake(&cc.egui_ctx),
+            ))));
             let mut app = WordApp::new(session, services(file_dialog, &cc.egui_ctx));
             app.set_startup_update_check(true);
             load_prefs(&mut app);

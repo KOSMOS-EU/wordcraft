@@ -199,13 +199,13 @@ pub(super) fn adjust_media(
     // kosmos: `base` stands in for a picture that is still on its way in a collaboration. What
     // is made of it is its picture's alone (not shared with what the same edit makes of another
     // frame), and the edit is made again on the picture when it arrives.
-    let standing_in = s.signal.stands_in(base, &bytes);
+    let standing_in = s.signal_frames.stands_in(base, &bytes);
     if standing_in {
         crate::signal_frame::png_comment(&mut png, &craft_opencore::signal::blobs::hash_of(&bytes));
     }
     let key = s.doc.add_media(png, "png");
     if standing_in && let Some(made) = s.doc.media.get(&key).cloned() {
-        s.signal.note_derived(base, bytes.clone(), &key, made, Box::new(f));
+        s.signal_frames.note_derived(base, bytes.clone(), &key, made, Box::new(f));
     }
     // Chain onto the ultimate original (the base's, or the current picture's when the base
     // is itself derived), so Reset Picture always finds it.

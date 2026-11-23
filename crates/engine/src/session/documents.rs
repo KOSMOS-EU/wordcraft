@@ -249,6 +249,7 @@ impl Session {
             registry: _,
             edms: _,
             signal: _,
+            signal_frames: _,
             author: _,
             initials: _,
             painter: _,
