@@ -9,10 +9,10 @@
 
 use std::sync::Arc;
 
-use craft_opencore::session::collab::stand_in::{self, FrameFormat};
+use craft_opencore::session::collab::pictures::{self, PictureHost};
 use craft_opencore::session::collab::{self, CollabHost, SignalSession};
-use craft_opencore::signal::{Attachment, ConnectRequest, Hash, PreviewKind};
-use serde_json::{Value, json};
+use craft_opencore::signal::{Attachment, ConnectRequest, Hash};
+use serde_json::Value;
 use wordcraft_doc::{Document, Path, StoryRef};
 
 use crate::edms::to_cmd;
@@ -73,15 +73,6 @@ pub fn now_ms() -> u64 {
 /// The paragraph count of the story an anchor names; `None` without one.
 fn paragraphs(doc: &Document, anchor: &Value) -> Option<usize> {
     touched(anchor).map(|t| doc.para_paths(t.story).len())
-}
-
-/// The picture `attachment` names, as the command carries it (base64), if `doc` holds it already.
-fn held_picture(doc: &Document, attachment: &Attachment) -> Option<String> {
-    doc.media
-        .values()
-        .filter(|bytes| (bytes.len().div_ceil(3) as u64).saturating_mul(4) == attachment.size)
-        .map(|bytes| crate::cmd::insert::base64_encode(bytes))
-        .find(|base64| craft_opencore::signal::blobs::hash_of(base64.as_bytes()) == attachment.hash)
 }
 
 impl CollabHost for Session {
@@ -172,65 +163,30 @@ impl CollabHost for Session {
         Ok(())
     }
 
-    /// A bigger picture goes with its pixel size and format, so the others show a frame until it is there.
+    /// A bigger picture goes with its pixel size and format, so the others show a frame until it is there (the kit's
+    /// frames, `session::collab::pictures`).
     fn describe_large(&self, command: &str, key: &str, text: &str) -> Option<(String, (u32, u32))> {
-        if command != "insert.picture" || key != "data" {
-            return None;
-        }
-        let bytes = crate::cmd::insert::base64_decode(text)?;
-        stand_in::describe(&bytes).map(|(format, pixels)| (format.mime().to_string(), pixels))
+        pictures::describe_large(self, command, key, text)
     }
 
     fn held(&self, attachment: &Attachment) -> Option<String> {
-        held_picture(&self.doc, attachment)
+        pictures::held(self, attachment)
     }
 
     fn stand_in(&self, command: &str, attachment: &Attachment) -> Result<(String, Vec<u8>), String> {
-        let format = FrameFormat::from_mime(&attachment.preview_type)
-            .filter(|_| attachment.kind() == PreviewKind::Generic && command == "insert.picture")
-            .ok_or_else(|| {
-                format!("`{}` has no preview that could be shown (a box of {}×{})", attachment.key, attachment.width, attachment.height)
-            })?;
-        let stand_in = stand_in::build(format, (attachment.width, attachment.height), &attachment.hash)?;
-        Ok((crate::cmd::insert::base64_encode(&stand_in), stand_in))
+        pictures::stand_in(self, command, attachment)
     }
 
-    /// Remember where the frames a command just put in ended up in the document's media.
     fn stand_ins_placed(&mut self, placed: Vec<(Hash, Vec<u8>)>) {
-        for (hash, stand_in) in placed {
-            let Some((media, bytes)) = self.doc.media.iter().find(|(_, bytes)| bytes.as_slice() == stand_in.as_slice()) else { continue };
-            if !self.signal_frames.place(hash, media, bytes.clone()) {
-                continue;
-            }
-            let entry = json!({"event": "framed", "media": media, "hash": craft_opencore::signal::blobs::hex(&hash)});
-            self.signal.note(entry.clone());
-            self.push_ui_request(json!({"signal": entry}));
-        }
+        pictures::stand_ins_placed(self, placed);
     }
 
-    /// The picture `hash` is complete here: put it where its frames are, in the document, in the undo
-    /// and redo steps and in the journal's snapshots. Returns how many frames it filled.
     fn content_arrived(&mut self, hash: &Hash, content: Option<&[u8]>, snapshots: &mut [&mut Box<EditSnapshot>]) -> usize {
-        let waiting = self.signal_frames.take_waiting(hash);
-        if waiting.is_empty() {
-            return 0;
-        }
-        let Some(content) = content.and_then(|base64| std::str::from_utf8(base64).ok()).and_then(crate::cmd::insert::base64_decode).map(Arc::new)
-        else {
-            self.signal.note(json!({"event": "error", "message": "a picture arrived that can't be read; its frame stays"}));
-            return 0;
-        };
-        let mut filled = 0usize;
-        for frame in &waiting {
-            let replaced = self.signal_replace_media(&frame.media, &frame.stand_in, &content, snapshots);
-            self.signal_redo_derived(&frame.media, frame.stand_in.clone(), content.clone(), snapshots);
-            filled += usize::from(replaced > 0);
-        }
-        filled
+        pictures::content_arrived(self, hash, content, snapshots)
     }
 
     fn extend_status(&self, status: &mut Value) {
-        status["framed"] = json!(self.signal_frames.framed());
+        pictures::extend_status(self, status);
     }
 
     /// Saved by the master on this state: clean, nothing else changes (no new stamps here).
@@ -239,7 +195,53 @@ impl CollabHost for Session {
     }
 
     fn collab_reset(&mut self) {
-        self.signal_frames.clear();
+        pictures::reset(self);
+    }
+}
+
+/// What WordCraft has and can for the kit's picture frames: pictures are `insert.picture`'s `data`, the document's
+/// media by name, Picture Format's changes made again on the picture.
+impl PictureHost for Session {
+    type Edit = PictureEdit;
+
+    fn frames(&self) -> &PictureFrames {
+        &self.signal_frames
+    }
+
+    fn frames_mut(&mut self) -> &mut PictureFrames {
+        &mut self.signal_frames
+    }
+
+    fn picture_param(&self, command: &str, key: &str) -> bool {
+        command == "insert.picture" && key == "data"
+    }
+
+    fn media(&self) -> Vec<(String, Arc<Vec<u8>>)> {
+        self.doc.media.iter().map(|(name, bytes)| (name.clone(), bytes.clone())).collect()
+    }
+
+    fn replace_media(&mut self, key: &str, old: &[u8], new: &Arc<Vec<u8>>) -> usize {
+        Session::replace_media(self, key, old, new)
+    }
+
+    fn replace_media_in(&self, snapshot: &mut Box<EditSnapshot>, key: &str, old: &[u8], new: &Arc<Vec<u8>>) -> usize {
+        snapshot.replace_media(key, old, new)
+    }
+
+    fn decode(&self, text: &str) -> Option<Vec<u8>> {
+        crate::cmd::insert::base64_decode(text)
+    }
+
+    fn encode(&self, bytes: &[u8]) -> String {
+        crate::cmd::insert::base64_encode(bytes)
+    }
+
+    fn redo_edit(&self, edit: &PictureEdit, picture: &[u8]) -> Result<Arc<Vec<u8>>, String> {
+        let picture = wordcraft_geom::picture::decode(picture, wordcraft_geom::MAX_DECODED_BYTES).map_err(|e| e.to_string())?;
+        let made = edit(picture).map_err(|e| e.to_string())?;
+        let mut png = Vec::new();
+        made.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+        Ok(Arc::new(png))
     }
 }
 
@@ -293,42 +295,5 @@ impl Session {
     #[cfg(test)]
     pub(crate) fn signal_save_wait_at(&mut self, now: u64) {
         collab::save_wait_at(self, now);
-    }
-
-    /// [`Session::replace_media`], and the same in the snapshots the journal would restore.
-    fn signal_replace_media(&mut self, key: &str, stand_in: &[u8], content: &Arc<Vec<u8>>, snapshots: &mut [&mut Box<EditSnapshot>]) -> usize {
-        let mut replaced = self.replace_media(key, stand_in, content);
-        for snapshot in snapshots.iter_mut() {
-            replaced += snapshot.replace_media(key, stand_in, content);
-        }
-        if replaced > 0 {
-            self.signal_frames.media_changed();
-        }
-        replaced
-    }
-
-    /// `media` got its picture (`content` where `stand_in` was): make the Picture Format changes
-    /// that were made to the stand-in again on the picture, and so on down the chain.
-    fn signal_redo_derived(&mut self, media: &str, stand_in: Arc<Vec<u8>>, content: Arc<Vec<u8>>, snapshots: &mut [&mut Box<EditSnapshot>]) {
-        let mut arrived = vec![(media.to_string(), stand_in, content)];
-        while let Some((base, base_before, base_now)) = arrived.pop() {
-            for derived in self.signal_frames.take_derived(&base, &base_before) {
-                let made = wordcraft_geom::picture::decode(&base_now, wordcraft_geom::MAX_DECODED_BYTES)
-                    .map_err(|e| e.to_string())
-                    .and_then(|picture| (derived.edit)(picture).map_err(|e| e.to_string()))
-                    .and_then(|picture| {
-                        let mut png = Vec::new();
-                        picture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
-                        Ok(Arc::new(png))
-                    });
-                match made {
-                    Ok(png) => {
-                        self.signal_replace_media(&derived.media, &derived.bytes, &png, snapshots);
-                        arrived.push((derived.media, derived.bytes, png));
-                    }
-                    Err(e) => self.signal.note(json!({"event": "error", "message": format!("a change to a picture could not be made again on the picture that arrived: {e}")})),
-                }
-            }
-        }
     }
 }
