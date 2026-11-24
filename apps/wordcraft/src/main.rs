@@ -613,6 +613,10 @@ fn main() -> eframe::Result {
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(doc);
             session.system_region = region;
+            // kosmos: the EDMS over native HTTP; it is used once `edms.connect` names a server.
+            session.edms.install(Box::new(craft_opencore::edms::Client::new(craft_opencore::native::NativeHttpTransport::new(
+                craft_opencore::egui::wake(&cc.egui_ctx),
+            ))));
             // kosmos: Craft Signal over the native transport (ticket by HTTP, WebSocket to the relay).
             session.signal.install(Box::new(craft_opencore::signal::Client::new(craft_opencore::native::NativeTransport::new(
                 craft_opencore::egui::wake(&cc.egui_ctx),
