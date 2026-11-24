@@ -47,6 +47,22 @@ struct App(
     #[cfg(target_os = "macos")] fmv_macos_events::Inbox,
 );
 
+thread_local! {
+    /// kosmos: the server's events for the EDMS (OpenCore kit), read on their own thread; set up with the window.
+    static EDMS_EVENTS: std::cell::RefCell<Option<craft_opencore::native::NativeEdmsEvents>> = const { std::cell::RefCell::new(None) };
+}
+
+/// kosmos: hand what the server's event stream brought to `edms.event`, once a frame (a newer version, a move).
+fn edms_events(app: &mut WordApp) {
+    let arrived = EDMS_EVENTS.with_borrow_mut(|events| events.as_mut().map(|events| events.frame(&app.session.edms)).unwrap_or_default());
+    for params in arrived {
+        let kind = params["type"].as_str().unwrap_or_default().to_string();
+        if let Err(error) = app.run("edms.event", params) {
+            log::debug!("edms events: {kind} not taken: {error}");
+        }
+    }
+}
+
 impl eframe::App for App {
     /// Advances one desktop frame: polls Finder events on macOS, runs the app and its file dialogs,
     /// fits or rescues the window and maximizes it after opening, then gates a close or quit request
@@ -55,6 +71,7 @@ impl eframe::App for App {
         #[cfg(target_os = "macos")]
         apple_events::poll(&self.5, &mut self.0, ctx);
         self.0.logic(ctx);
+        edms_events(&mut self.0);
         self.3.show(frame);
         let mut window = self.4;
         // Only until the off-screen check below has run: it is the one reader.
@@ -613,10 +630,11 @@ fn main() -> eframe::Result {
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
             let mut session = Session::new(doc);
             session.system_region = region;
-            // kosmos: the EDMS over native HTTP; it is used once `edms.connect` names a server.
+            // kosmos: the EDMS over native HTTP, and the server's events for it; used once `edms.connect` names a server.
             session.edms.install(Box::new(craft_opencore::edms::Client::new(craft_opencore::native::NativeHttpTransport::new(
                 craft_opencore::egui::wake(&cc.egui_ctx),
             ))));
+            EDMS_EVENTS.set(Some(craft_opencore::native::NativeEdmsEvents::new(craft_opencore::egui::wake(&cc.egui_ctx))));
             // kosmos: Craft Signal over the native transport (ticket by HTTP, WebSocket to the relay).
             session.signal.install(Box::new(craft_opencore::signal::Client::new(craft_opencore::native::NativeTransport::new(
                 craft_opencore::egui::wake(&cc.egui_ctx),
