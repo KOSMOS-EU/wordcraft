@@ -126,6 +126,26 @@ fn open_save_and_a_rejected_save_follow_the_tracker() {
     assert!(s.ui_requests.iter().any(|r| r["edms"]["advice"] == "conflict"));
 }
 
+/// kosmos: OpenCloud's New menu makes an empty file; WordCraft begins a blank document there, and the first save
+/// writes a real docx to that place.
+#[test]
+fn an_empty_file_from_the_new_menu_becomes_a_blank_document_saved_in_its_place() {
+    let (mut s, transport) = connected();
+    let id = pending_id(&s.run("edms.open", &json!({"drive": DRIVE, "path": "/Neu.docx"})).unwrap());
+    transport.answer(id, HttpResponse::new(200).with_header("ETag", "\"e0\"").with_header("OC-FileId", FILE_ID).with_body(Vec::new()));
+    let opened = poll_one(&mut s);
+    assert_eq!((opened["ok"].as_bool(), opened["new"].as_bool()), (Some(true), Some(true)), "{opened}");
+    assert_eq!(s.doc.plain_text(wordcraft_doc::StoryRef::Body), "");
+    assert_eq!(s.file_name.as_deref(), Some("Neu.docx"));
+    s.run("text.insert", &json!({"text": "Erster Text"})).unwrap();
+    let id = pending_id(&s.run("edms.save", &json!({})).unwrap());
+    let (_, request) = transport.last_started().unwrap();
+    assert_eq!((request.method, request.header_value("if-match")), (Method::Put, Some("\"e0\"")));
+    assert!(request.body.starts_with(b"PK"), "a real docx goes to the empty file's place");
+    transport.answer(id, HttpResponse::new(204).with_header("OC-ETag", "\"e1\""));
+    assert_eq!(poll_one(&mut s)["saved"].as_bool(), Some(true));
+}
+
 #[test]
 fn a_foreign_event_offers_a_reload_an_own_one_does_not() {
     let (mut s, transport) = connected();

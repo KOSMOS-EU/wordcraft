@@ -19,6 +19,26 @@ pub(crate) fn to_cmd(error: CommandError) -> CmdError {
     }
 }
 
+impl Session {
+    /// A document from the EDMS (opened, or begun in an empty file) in the active one's place or beside it; it is
+    /// called `name`, has no path on this computer and counts as saved.
+    fn show_from_edms(&mut self, doc: wordcraft_doc::Document, name: &str, replace_active: bool) -> Result<Value, CommandError> {
+        if replace_active {
+            self.set_document(doc);
+        } else {
+            log::info!("edms.open: opened beside document {}, not in its place", self.document_id());
+            self.add_opened_document(doc);
+        }
+        if let Some(zoom) = self.doc.settings.zoom {
+            crate::cmd::view::restore_zoom(self, zoom);
+        }
+        self.path = None;
+        self.file_name = Some(name.to_string());
+        self.dirty = false;
+        Ok(json!({"paragraphs": self.doc.paragraph_count(), "words": self.doc.word_count()}))
+    }
+}
+
 fn from_cmd(error: CmdError) -> CommandError {
     match error {
         CmdError::Unknown(command) => CommandError::Unknown(command),
@@ -51,19 +71,17 @@ impl DocumentHost for Session {
 
     fn open_document(&mut self, name: &str, bytes: &[u8], replace_active: bool) -> Result<Value, CommandError> {
         let (doc, _encrypted) = crate::io::open_bytes_in(name, bytes, None, &self.region()).map_err(CommandError::Failed)?;
-        if replace_active {
-            self.set_document(doc);
-        } else {
-            log::info!("edms.open: opened beside document {}, not in its place", self.document_id());
-            self.add_opened_document(doc);
-        }
-        if let Some(zoom) = self.doc.settings.zoom {
-            crate::cmd::view::restore_zoom(self, zoom);
-        }
-        self.path = None;
-        self.file_name = Some(name.to_string());
-        self.dirty = false;
-        Ok(json!({"paragraphs": self.doc.paragraph_count(), "words": self.doc.word_count()}))
+        self.show_from_edms(doc, name, replace_active)
+    }
+
+    /// kosmos: an empty file (OpenCloud's New menu makes one) becomes a new blank document on the Normal template,
+    /// as File › New makes it, in that file's place.
+    fn new_document(&mut self, name: &str, replace_active: bool) -> Result<Value, CommandError> {
+        let doc = crate::cmd::file::normal_document(self);
+        self.show_from_edms(doc, name, replace_active).map(|mut summary| {
+            summary["new"] = json!(true);
+            summary
+        })
     }
 
     fn document_bytes(&mut self, name: &str) -> Result<Vec<u8>, CommandError> {
