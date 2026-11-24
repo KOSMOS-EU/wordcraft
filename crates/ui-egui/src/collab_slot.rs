@@ -3,7 +3,6 @@
 //! the session's status in, its commands out, its language.
 
 use egui::Ui;
-use serde_json::json;
 
 use crate::WordApp;
 
@@ -13,12 +12,8 @@ pub(crate) fn show(ui: &mut Ui, app: &mut WordApp, height: f32) {
     let view = craft_opencore::signal::view::view(&app.session.signal.status());
     let look = craft_opencore::egui::Look { height, accent: crate::theme::Tokens::get(ui.ctx()).accent };
     let Some(wish) = craft_opencore::egui::show(ui, &view, look, &|text| crate::i18n::t(text).to_string()) else { return };
-    let (command, params) = match wish {
-        craft_opencore::egui::Wish::Join => ("signal.join", json!({})),
-        craft_opencore::egui::Wish::Leave => ("signal.disconnect", json!({})),
-        craft_opencore::egui::Wish::Edit => ("signal.mode", json!({"value": "edit"})),
-        craft_opencore::egui::Wish::Read => ("signal.mode", json!({"value": "readOnly"})),
-    };
+    // The kit's command for the wish, run through the app's own path (status line, ui requests) as before.
+    let (command, params) = craft_opencore::egui::wish_command(wish);
     if let Err(e) = app.run(command, params) {
         app.status(e.to_string());
     }
