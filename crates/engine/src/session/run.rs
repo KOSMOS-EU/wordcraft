@@ -81,10 +81,11 @@ impl Session {
             return Err(CmdError::Disabled(format!("{id}: {why}")));
         }
         // Restrict Editing: refused outright, or allowed as long as it only edits the exceptions.
-        // kosmos: a participant that just joined a collaboration waits for the master's document,
-        // which takes the place of this one. An edit now would be lost with it.
-        if spec.mutates && self.signal.syncing() && !self.signal.applying() {
-            return Err(CmdError::Disabled("the document is being brought up to date with the collaboration".into()));
+        // kosmos: the document never leaves its collaboration's state: while it joins, while someone
+        // else leads and the person decides, while the master's document is on its way (it takes the
+        // place of this one) and when it is read only, it isn't changed or saved (craft-opencore).
+        if let Some(lock) = craft_opencore::session::collab::edit_lock(self, id, spec.mutates) {
+            return Err(CmdError::Disabled(lock.reason("document")));
         }
         // kosmos: undo and redo are off while joined (the others wouldn't see them; SIGNAL.md, shared undo).
         if let Some(why) = self.signal.refuses(id) {

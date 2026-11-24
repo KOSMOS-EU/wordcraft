@@ -44,6 +44,8 @@ pub fn specs() -> Vec<CommandSpec> {
         "edms.event",
         "signal.connect",
         "signal.join",
+        "signal.accept",
+        "signal.decline",
         "signal.auto",
         "signal.disconnect",
         "signal.status",

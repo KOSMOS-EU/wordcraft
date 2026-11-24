@@ -66,6 +66,12 @@ fn joined_waiting_for_the_state(s: &mut Session, transport: &RecordingTransport,
     frame.seq = seq;
     transport.deliver(frame);
     s.signal_pump();
+    if id != master {
+        // Someone else leads: the person is told and decides first; the document waits as opened.
+        assert!(transport.sent().iter().all(|frame| frame.kind != FrameType::SyncReq), "nothing is asked for before the decision");
+        assert!(s.run("text.insert", &json!({"text": "x"})).is_err(), "not editable while deciding");
+        s.run("signal.accept", &json!({})).unwrap();
+    }
     let sent = transport.take_sent();
     assert_eq!(
         sent.iter().filter(|frame| frame.kind == FrameType::SyncReq).count(),
@@ -250,8 +256,10 @@ fn master_changes_and_closures_reach_the_front_end() {
     s.signal_pump();
     assert_eq!(s.run("signal.status", &json!({})).unwrap()["state"], json!("disconnected"));
     assert!(std::mem::take(&mut s.ui_requests).iter().any(|r| r["signal"]["event"] == "closed"));
-    s.run("text.insert", &json!({"text": "?"})).unwrap();
-    assert!(transport.take_sent().is_empty(), "local again");
+    // A lost connection leaves the document read only until it joins again (it would part from the session).
+    assert!(s.run("text.insert", &json!({"text": "?"})).is_err(), "read only after the session ended by itself");
+    assert_eq!(s.run("signal.status", &json!({})).unwrap()["readOnly"], json!("lost"));
+    assert!(transport.take_sent().is_empty(), "nothing goes out");
     assert_eq!(s.run("signal.disconnect", &json!({})).unwrap()["connected"], json!(false));
 }
 

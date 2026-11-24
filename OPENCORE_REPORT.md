@@ -5,7 +5,9 @@ Dieser Bericht gehört zum Fork (Branch `kosmos`), nicht zu Upstream. Er hält f
 was dabei gut ging und was dem Plugin fehlte. Zweck: das Plugin so weit bringen, dass die nächste App schnell und
 sicher angebunden ist. Gegenstück in jedem Fork; der Plan steht in `opencraft/PLAN_EDMS_APPS_20261122.md`.
 
-Stand: 22.11.2026, Fork-Tag `v0.18.1-kosmos.16` (`9aed340e`), Basis Upstream `v0.18.1`.
+Stand: 24.11.2026, Fork-Tag `v0.18.1-kosmos.24` (`e5f0b1d8`) und die Sperre beim Beitritt (danach), Basis Upstream
+`v0.18.1`. Abschnitte 1 bis 3 beschreiben den Anfang (22.11.), der Verlauf in Abschnitt 1 und die Abschnitte 4 bis 8
+sind nachgeführt.
 
 ## 1. Kennzahlen
 
@@ -32,6 +34,13 @@ Verlauf während Stufe 0 (gemessen mit `git diff --shortstat` gegen Upstream `ma
 | `0e7386b3` (23.11.) | 44 Dateien, 4449 Zeilen dazu | Bereich `session::collab`: Journal, Rücknahme, Konfliktregel, Abgleich, Speichern über den Master, Befehle `signal.*`; WordCraft behält den Adapter `CollabHost` (`signal.rs` 1254 → 380: Momentaufnahme, Anker als Absatzbereich, Zustand als docx, Bildrahmen) |
 | `65def218` (23.11.) | 44 Dateien, 4169 Zeilen dazu | Bereich `session::picker`: Modell und Ablauf des Ortswählers; WordCraft zeichnet ihn unverändert mit seinen Bedienelementen (`edms_browser.rs` 1048 → 753) |
 | `eb52853b` (23.11.) | 43 Dateien, 3914 Zeilen dazu | Bildrahmen: Buchführung (`session::collab::frames`) und Bau der Rahmen (`session::collab::stand_in`, Feature `pictures`); WordCraft behält das Ersetzen im Dokument und das Wiederholen der Bildformat-Änderung. Rahmen byte-gleich mit dem alten Stand |
+| `308a3db4` (23.11.) | 43 Dateien, 3745 Zeilen dazu | Ortswähler zeichnet das Kit (`egui::picker`) mit WordCrafts Aussehen (`PickerLook`); gleiche egui-Formen in 48 Fällen nachgewiesen, mit Gegenprobe (`edms_browser.rs` 753 → 578) |
+| `35dae997` (24.11.) | unverändert | Meldungen sagen „Core“ statt „the cloud“ (Wortlaut im Kit) |
+| `9afc3ce7` (24.11.) | 43 Dateien, 3710 Zeilen dazu | Ablauf der Bildrahmen im Kit (`collab::pictures`, `PictureHost`); Rahmen-Tests byte-genau grün |
+| `4c53a021` (24.11.) | 43 Dateien, 3732 Zeilen dazu | Rückgängig/Wiederholen aus, solange beigetreten (Kit `refuses`, Variante C des gemeinsamen Rückgängig) |
+| `cd59c74f`, `e5f0b1d8` (24.11.) | 43 Dateien, 3749 Zeilen dazu | Desktop: EDMS-Transport und Ereignisstrom des Kits (`native`); vorher hatte die Desktop-Fassung kein EDMS |
+| `19cbefa5` (24.11.) | unverändert | Kopfzeile nimmt die Befehle zu den Wünschen aus dem Kit (`wish_command`) |
+| Sperre beim Beitritt (24.11., nach kosmos.24) | Befehlslauf: eine Prüfung statt einer | Kit `collab::edit_lock`: bis feststeht, ob man führt oder nachfolgt, beim Nachzügler bis zu seiner Wahl, mit Leserecht und nach einem Abbruch ist das Dokument nur lesbar (opencraft `SIGNAL.md`, „Sperre beim Beitritt“) |
 
 Von den 3914 Zeilen sind 1681 Tests (`tests/signal.rs` 1130, `tests/edms.rs` 551), der Code ohne Tests liegt bei
 rund 2230 Zeilen. Die Tests bleiben in WordCraft (Bewertung 23.11.): fast jeder prüft Kit und Adapter zusammen mit
@@ -118,15 +127,44 @@ Einbau (~300). Das ist eine Entscheidung mit Upstream, nicht im Fork zu machen.
 7. Oberfläche für `edms.runWith`, für die Rückfrage beim Speichern mit offener Nachlieferliste und für den
    Rahmen eines Bildes, das noch unterwegs ist.
 
+### Nachtrag 24.11.: was das Kit seither trägt
+
+- Aus Abschnitt 5 erledigt: 1 (eigene Crate `craft-opencore` mit Bereichen `session`, `collab`, `picker`, `web`,
+  `native`, `egui`), 2 zum Teil (Adapter `DocumentHost`/`CollabHost`/`PictureHost`; Prüfsatz nur im Kit mit einer
+  Schein-App, nicht gegen jede App), Ortswähler-Oberfläche aus 7.
+- Die zweite App (DeckCraft) zeigte, was im Kit fehlte, und das ist jetzt drin: Zeit und Autor eines Befehls
+  (`clock`, `command_author`), Sperre für Rückgängig, Meldungstexte je App (`signal_notices`), Kopfzeilen-Widget als
+  ganzes (`egui::header`), native Transporte. Siehe `deckcraft/OPENCORE_REPORT.md`.
+- Sperre beim Beitritt (Entscheidung Auftraggeber 24.11.): ein Dokument weicht nie vom Stand seiner Sitzung ab.
+  Ein Nachzügler erfährt, dass ein anderer die Datei bearbeitet, und wählt Beitreten oder Nur lesen; das Widget
+  klappt dafür von selbst auf.
+
+### Weitere Fallen (23./24.11.)
+
+| Falle | Folge | Lehre für das Plugin |
+|---|---|---|
+| Abbruch der Verbindung, dann weiter getippt | nichts ging hinaus; beim Wiederbeitritt ersetzte der Stand des Masters das Getippte | nach einem Abbruch nur lesbar (Kit) |
+| zwischen Öffnen und Beitritt bearbeitbar | Eingaben vor dem Beitritt gingen beim Übernehmen verloren | ab dem Öffnen gesperrt, bis feststeht, ob man führt |
+| selbsttätiger Beitritt je Datei statt je Öffnen | wer schloss und neu öffnete, trat nicht wieder bei | je geöffnetem Dokument |
+| Read-Only-Teilnehmer tippten lokal | ihr Dokument wich still ab | Leserecht sperrt im Kit, nicht in der App |
+
 ## 6. Offene Punkte dieser App
 
-- Ein Teilnehmer im Modus Read-Only kann lokal tippen.
-- Beim späteren Beitritt geht ein ungespeicherter lokaler Stand ohne Rückfrage verloren.
+- ~~Ein Teilnehmer im Modus Read-Only kann lokal tippen.~~ Gesperrt seit 24.11. (Kit).
+- ~~Beim späteren Beitritt geht ein ungespeicherter lokaler Stand ohne Rückfrage verloren.~~ Kann nicht mehr entstehen
+  (gesperrt bis zum Beitritt).
+- „Speichern unter“ schlägt bei Dokumenten aus dem EDMS `….docx.docx` vor (`title_stem` nimmt den Dateinamen samt
+  Endung; vorbestehend, nicht vom Umbau).
+- Der Hinweis „File › Reload from Core“ nennt einen Menüpunkt, den es nicht gibt; Befehle und Ortswähler sagen „EDMS“.
+- Gemeinsames Rückgängig Variante A (Unterschied als Befehl) braucht einen Befehl für Absatzbereiche.
+- Wer die Sitzung selbst verlässt, bearbeitet allein weiter (nicht entschieden).
 - Vorbestehend rot, nicht von uns: `cmd::packs::tests::swiss_german_and_portugal_portuguese_keep_their_languages_rules`.
 - Der Fork ist bei GitHub öffentlich abrufbar (geprüft 22.11.2026); ob das gewollt ist, entscheidet der Auftraggeber.
 
 ## 7. Wie geprüft wird
 
-- Engine: `cargo test -p wordcraft-engine --lib` (1395 grün, 1 vorbestehend rot), Clippy, WASM-Check.
+- Engine: `cargo test -p wordcraft-engine --lib` (24.11.: 1402 grün, 1 vorbestehend rot), Clippy, WASM-Check.
+  Oberfläche: 1220 grün, 2 rot nur ohne `craft-fonts` (Glyphen).
 - Zusammenarbeit: `opencraft/testbench/run.py --headless` (zwei native Instanzen gegen das Go-Relais).
-- Browser: `opencraft/tests/browser/test_selfload.py` gegen xwork nach jedem Rollout.
+- Browser gegen xwork nach jedem Rollout: `test_selfload.py`, `test_picker.py`, `test_collab.py` (zwei Fenster; prüft
+  seit 24.11. auch Frage, Nur lesen und Beitreten und misst die Zeiten), `test_two_users.py` (zwei Nutzer, Bilder).
