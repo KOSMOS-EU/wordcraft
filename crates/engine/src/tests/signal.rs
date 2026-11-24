@@ -664,6 +664,8 @@ fn a_framed_picture_is_swapped_in_when_it_arrives_also_in_the_undo_steps() {
     assert!(s.signal.outstanding().is_empty());
     assert!(s.ui_requests.iter().any(|r| r["signal"]["event"] == "blobComplete" && r["signal"]["replaced"] == 1));
     assert_eq!(s.run("signal.status", &json!({})).unwrap()["framed"], json!(0));
+    // Undo is off while joined (SIGNAL.md, shared undo): the undo steps are looked at after leaving.
+    s.run("signal.disconnect", &json!({})).unwrap();
     s.run("edit.undo", &json!({})).unwrap();
     assert!(!text(&s).contains("Bildunterschrift"));
     assert_eq!(s.doc.media.get(&key).map(|bytes| bytes.as_slice()), Some(png.as_slice()), "the undo step does not bring the frame back");
@@ -766,6 +768,8 @@ fn a_change_made_to_a_frame_is_made_again_on_the_picture_when_it_arrives() {
     assert_eq!(s.doc.media, sender.doc.media, "the same names and bytes as with the one who had the picture");
     // And nothing brings the grey frame back.
     s.run("text.insert", &json!({"text": "x"})).unwrap();
+    // Undo is off while joined (SIGNAL.md, shared undo): the undo steps are looked at after leaving.
+    s.run("signal.disconnect", &json!({})).unwrap();
     s.run("edit.undo", &json!({})).unwrap();
     assert_eq!(s.doc.media, sender.doc.media);
 }
@@ -1127,4 +1131,18 @@ fn the_master_refuses_to_save_for_a_participant_while_content_is_on_its_way() {
     assert_eq!((refusal.sender, refusal.local), (3, 9));
     assert!(String::from_utf8_lossy(&refusal.payload).starts_with("incomplete"));
     assert!(s.ui_requests.is_empty() || !s.ui_requests.iter().any(|r| r["edms"]["event"] == "saveIncomplete"), "no question on the master's screen");
+}
+
+/// While joined, undo and redo are refused (the others wouldn't see them); after leaving they work again.
+#[test]
+fn undo_is_off_while_joined() {
+    let (mut s, transport) = session();
+    joined(&mut s, &transport, 1, 0, 1, 0);
+    s.run("text.insert", &json!({"text": "Hello"})).unwrap();
+    let refused = s.run("edit.undo", &json!({})).unwrap_err().to_string();
+    assert!(refused.contains("edit together"), "{refused}");
+    assert!(s.run("edit.redo", &json!({})).is_err());
+    s.run("signal.disconnect", &json!({})).unwrap();
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(text(&s), "");
 }

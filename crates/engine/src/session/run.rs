@@ -86,6 +86,10 @@ impl Session {
         if spec.mutates && self.signal.syncing() && !self.signal.applying() {
             return Err(CmdError::Disabled("the document is being brought up to date with the collaboration".into()));
         }
+        // kosmos: undo and redo are off while joined (the others wouldn't see them; SIGNAL.md, shared undo).
+        if let Some(why) = self.signal.refuses(id) {
+            return Err(CmdError::Disabled(why.into()));
+        }
         let guard = if spec.mutates { crate::cmd::protect::check_before(self, id, params)? } else { false };
         // Quick Parts aren't part of the document, so a refused edit puts them back itself (the Spike).
         let blocks_before = guard.then(|| self.building_blocks.clone());
