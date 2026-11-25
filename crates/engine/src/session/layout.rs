@@ -5,6 +5,12 @@ use super::view::DRAFT_WIDTH;
 use super::{Arc, DocLayout, Document, LayoutCache, LayoutOptions, Session, StoryRef, Value, ViewMode};
 
 impl Session {
+    /// kosmos: the layout last computed, without laying out again (`None` before the first). For questions asked every
+    /// frame from where the session can't be changed (the OpenCore kit asking which fonts the document lacks).
+    pub(crate) fn last_layout(&self) -> Option<Arc<DocLayout>> {
+        self.layout[0].as_ref().map(|entry| entry.5.clone())
+    }
+
     /// The current layout (recomputed when the document or view changed).
     pub fn layout(&mut self) -> Arc<DocLayout> {
         let typing = self.typing_word();

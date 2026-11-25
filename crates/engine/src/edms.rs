@@ -154,6 +154,21 @@ impl DocumentHost for Session {
     fn may_autosave(&self) -> bool {
         !self.signal.follows_master() && craft_opencore::session::collab::lock_state(self).is_none()
     }
+
+    /// kosmos: the fonts the document's laid-out text asks for that aren't installed (`font.missing`), from the last
+    /// layout: the kit fetches them, or their metric twins, from the instance.
+    fn wanted_fonts(&self) -> Vec<String> {
+        let Some(layout) = self.last_layout() else { return Vec::new() };
+        crate::cmd::font::missing_fonts(&self.doc, &layout).into_iter().map(|missing| missing.font).collect()
+    }
+
+    /// kosmos: a font file from the instance, for this session only, as a document's embedded fonts are (never stored
+    /// as the user's font, the instance has it): the text shown in a fallback until now takes it.
+    fn install_font(&mut self, family: &str, bytes: &[u8]) -> Result<(), CommandError> {
+        wordcraft_fonts::FontDb::global().add_document_fonts(vec![(bytes.to_vec(), family.to_string())]);
+        self.relayout();
+        Ok(())
+    }
 }
 
 impl Session {

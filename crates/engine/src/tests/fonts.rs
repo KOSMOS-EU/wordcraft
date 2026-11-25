@@ -509,3 +509,24 @@ fn libreoffice_font_fallback_lists_are_not_reported_as_missing_when_installed() 
         "drawn: {drawn}"
     );
 }
+
+/// kosmos: the OpenCore kit asks which fonts the document lacks (`wanted_fonts`, from the last layout) and gives the
+/// instance's file (`install_font`): the font is there for the session, the text takes it, it is no longer wanted.
+#[test]
+fn the_kit_hears_the_missing_font_and_its_file_lays_the_text_out_again() {
+    use craft_opencore::session::DocumentHost;
+    // Another name than the test above: the font database is shared by the tests in this process.
+    const FAMILY: &str = "Kitfont Face 4";
+    const TEXT: &str = "illicit little lilies fill tiny jill";
+    let mut s = Session::new(wordcraft_doc::Document::new());
+    let mono = text_end_x(&mut s, "JetBrains Mono", TEXT);
+    let missing = text_end_x(&mut s, FAMILY, TEXT);
+    assert!(s.wanted_fonts().iter().any(|f| f == FAMILY), "{:?}", s.wanted_fonts());
+    s.install_font(FAMILY, &renamed("JetBrainsMono-Regular.ttf", "JetBrains Mono", FAMILY)).unwrap();
+    let x = s.layout().caret_on(&Pos::body(0, TEXT.len()), 0).unwrap().x;
+    assert!((x - mono).abs() < 0.01, "measured with the instance's font: {x} vs {mono} (missing {missing})");
+    assert!(!s.wanted_fonts().iter().any(|f| f == FAMILY), "{:?}", s.wanted_fonts());
+    // For the session only: not recorded as the user's font.
+    let list = s.run("font.list", &json!({})).unwrap();
+    assert!(!list["fonts"].as_array().unwrap().iter().any(|f| f["families"] == json!([FAMILY])));
+}
