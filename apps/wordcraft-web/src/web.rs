@@ -96,8 +96,11 @@ pub fn start() {
                         app.session.set_document(doc);
                     }
                     let mut prefs = crate::prefs::PrefsSync::new(stored);
-                    // No document to show: start on File › Home, as the desktop app does (#766).
-                    if !sample {
+                    // No document to show: start on File › Home, as the desktop app does (#766). kosmos: not when the
+                    // host page is about to open one (`opening=1`, the OpenCraft start page and shell): File › Home
+                    // would show for a moment and give way to the document; the blank page stays until it arrives.
+                    let host_opens = app_bridge.is_some() && query_flag("opening") == Some(true);
+                    if !sample && !host_opens {
                         app.start_screen();
                     }
                     // The host's name for the user signs this visit's work, but isn't stored as the
