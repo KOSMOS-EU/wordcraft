@@ -36,6 +36,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "edms.runWith",
         "edms.adopt",
         "edms.save",
+        "edms.autosave",
         "edms.saveAs",
         "edms.export",
         "edms.reload",

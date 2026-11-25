@@ -136,6 +136,24 @@ impl DocumentHost for Session {
     fn versions_announced(&self) -> bool {
         self.signal.follows_master()
     }
+
+    /// kosmos: the clock for AutoSave to the EDMS, the same as the collaboration's.
+    fn clock_ms(&self) -> Option<u64> {
+        let now = crate::signal::now_ms();
+        (now > 0).then_some(now)
+    }
+
+    /// kosmos: every change advances `rev` (`touch`): AutoSave waits for a pause in the typing, and a save keeps
+    /// the changes made while it uploads unsaved.
+    fn revision(&self) -> Option<u64> {
+        Some(self.rev())
+    }
+
+    /// kosmos: AutoSave only where this session writes the file: not while it joins, decides, syncs or only reads,
+    /// and in a collaboration only as its master (the others' saves are the master's).
+    fn may_autosave(&self) -> bool {
+        !self.signal.follows_master() && craft_opencore::session::collab::lock_state(self).is_none()
+    }
 }
 
 impl Session {

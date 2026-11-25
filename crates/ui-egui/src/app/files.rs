@@ -395,6 +395,10 @@ impl WordApp {
     /// user saved to in this session, in a format that keeps everything, and never in the browser
     /// (a page can't write to the user's files; saving there is a download, #176).
     pub fn autosave_block(&self) -> Option<AutoSaveBlock> {
+        // kosmos: a document from the EDMS saves in place, in the browser too: the OpenCore kit does it.
+        if self.document_in_edms() {
+            return None;
+        }
         if self.services.download.is_some() {
             return Some(AutoSaveBlock::Browser);
         }
@@ -411,6 +415,10 @@ impl WordApp {
 
     /// Whether AutoSave covers the document: it is on and nothing blocks it ([`Self::autosave_block`]).
     pub fn autosaves(&self) -> bool {
+        // kosmos: for a document from the EDMS the switch shows the kit's AutoSave.
+        if self.document_in_edms() {
+            return self.session.edms.autosave().enabled();
+        }
         self.autosave && self.autosave_block().is_none()
     }
 
@@ -422,6 +430,11 @@ impl WordApp {
         if on && let Some(block) = self.autosave_block() {
             return Err(block.reason());
         }
+        // kosmos: for a document from the EDMS the switch turns the kit's AutoSave on or off.
+        if self.document_in_edms() {
+            self.session.run("edms.autosave", &json!({"enabled": on})).map_err(|error| error.to_string())?;
+            return Ok(json!({"value": on}));
+        }
         self.autosave = on;
         self.session.autosave = on;
         Ok(json!({"value": on}))
@@ -430,7 +443,8 @@ impl WordApp {
     /// AutoSave: write a saved document a couple of seconds after the last change. A failure is
     /// shown in the status bar and turns AutoSave off for the file until the user saves it again.
     pub(crate) fn autosave_tick(&mut self, now: f64) {
-        if self.autosaves() && self.session.dirty && now - self.last_autosave > 2500.0 && now - self.canvas.caret_visible_since > 1500.0 {
+        // kosmos: a document from the EDMS is saved by the kit's AutoSave (`edms.autosave`), not here.
+        if self.autosaves() && !self.document_in_edms() && self.session.dirty && now - self.last_autosave > 2500.0 && now - self.canvas.caret_visible_since > 1500.0 {
             self.last_autosave = now;
             if let Err(e) = self.session.run("file.save", &json!({})) {
                 log::warn!("AutoSave failed: {e}");
