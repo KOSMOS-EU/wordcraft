@@ -1454,14 +1454,43 @@ impl Body<'_> {
         if let Some((mut control, text)) = get(a, "draw:control").and_then(|id| self.forms.controls.get(id)).cloned() {
             // Its size (§19.539, §19.571).
             let len = |k: &str| get(a, k).and_then(length).filter(|v| v.is_finite() && *v > 0.0).map(|v| v.min(1584.0));
+            let fmt = self.cur_fmt();
             if let (Some(w), Some(h)) = (len("svg:width"), len("svg:height")) {
                 control.form_size = Some([w, h]);
-                // Where it stands on the line (§20.387), as an in-line frame does.
                 let g = self.styles.shape_graphic(get(a, "draw:style-name"));
-                let raise = super::frames::place(a, w, h, &g, self.text_size()).y;
+                let place = super::frames::place(a, w, h, &g, self.text_size());
+                // kosmos: anchored to the page, the paragraph or a character (not `as-char`), the control stands
+                // where `svg:x`/`svg:y` put it, as a frame does (§19.11): in a text box of its size at that
+                // place, not in the paragraph's text. (Forms made in LibreOffice anchor their fields to the
+                // page; read in line, all of them gathered at the start of the first paragraph.)
+                if place.wrap != wordcraft_doc::para::Wrap::Inline {
+                    let mut place = place;
+                    // A form control is a drawing object: page-anchored "from the paragraph" (LibreOffice's FRAME
+                    // relation) LibreOffice and Collabora place it from the page's edge, not from its text area as
+                    // a text frame's (`frames::float_of`; seen in a 2013 LibreOffice form, 2026-11-25).
+                    let page_anchored = get(a, "text:anchor-type").map(str::trim) == Some("page");
+                    if page_anchored && place.h_rel == wordcraft_doc::para::Anchor::Margin && g.horizontal_rel() == Some("paragraph") {
+                        place.h_rel = wordcraft_doc::para::Anchor::Page;
+                    }
+                    let field = Para { inlines: vec![Inline::Control { control: Box::new(control), text, fmt }], ..Para::default() };
+                    let mut look = g.look(false, &self.styles.defs);
+                    look.inset = Some([0.0; 4]);
+                    let shape = Inline::Shape {
+                        kind: wordcraft_doc::para::ShapeKind::TextBox,
+                        w,
+                        h,
+                        float: Some(Box::new(place)),
+                        blocks: vec![FBlock::Para(field)],
+                        look,
+                        path: None,
+                    };
+                    self.push_inline(shape);
+                    return;
+                }
+                // Where it stands on the line (§20.387), as an in-line frame does.
+                let raise = place.y;
                 control.form_raise = (raise.is_finite() && raise != 0.0).then_some(raise);
             }
-            let fmt = self.cur_fmt();
             self.push_inline(Inline::Control { control: Box::new(control), text, fmt });
         }
     }

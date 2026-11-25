@@ -286,6 +286,11 @@ impl Graphic {
         }
     }
 
+    /// kosmos: its `style:horizontal-rel`, as the style (or a parent) says.
+    pub(super) fn horizontal_rel(&self) -> Option<&str> {
+        self.hrel.as_deref().map(str::trim)
+    }
+
     /// The look of a text box in a frame of this style, growing to its text when `auto_fit`.
     /// What the styles leave unsaid is ODF's default: no line, no fill, no padding.
     pub(super) fn look(&self, auto_fit: bool, defs: &Defs) -> BoxLook {

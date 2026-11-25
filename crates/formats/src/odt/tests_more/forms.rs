@@ -55,8 +55,8 @@ fn form_controls_open_as_content_controls() {
     assert_eq!((got[4].0.clone(), got[4].3.as_str()), (ControlKind::Text { multi_line: true }, "Line one"));
     assert!(matches!(got[5].0, ControlKind::CheckBox { checked: true, checked_char: '\u{25C9}', .. }) && got[5].3 == "\u{25C9}");
     assert!(matches!(&got[6].0, ControlKind::Date { full_date, .. } if full_date == "2026-11-01T00:00:00Z") && got[6].3 == "2026-11-01");
-    // An empty field shows its placeholder.
-    assert!(got[7].4 && got[7].3 == "Type here.");
+    // An empty field shows its placeholder. kosmos: an empty one, as LibreOffice shows the field (no "Type here.").
+    assert!(got[7].4 && got[7].3 == "\u{a0}");
     // The forms' own elements aren't text.
     assert!(paras(&flow).iter().all(|p| !matches!(p.inlines.first(), Some(Inline::Text(t, _)) if t.contains('y') && t.len() == 1)));
 }
@@ -245,4 +245,49 @@ fn password_number_time_and_grid_controls_are_kept() {
     // And again.
     let again = entry(&export(&import(&saved).unwrap()).unwrap(), "content.xml");
     assert!(again.contains("<form:password ") && again.contains("<form:grid ") && again.matches("<draw:control ").count() == 4, "{again}");
+}
+
+/// kosmos: LibreOffice anchors a form's fields to the page (`text:anchor-type="page"`, at `svg:x`/`svg:y`); its
+/// check boxes stand in the text (`as-char`). The fields stand where they are put, each in a text box of its size,
+/// not gathered at the start of the paragraph holding their `draw:control`; the check boxes stay in line.
+#[test]
+fn page_anchored_form_fields_stand_where_they_are_put() {
+    let field = |id: &str, x: &str, y: &str| {
+        format!(
+            r#"<draw:control text:anchor-type="page" text:anchor-page-number="1" svg:width="10cm" svg:height="0.75cm" svg:x="{x}" svg:y="{y}" draw:control="{id}"/>"#
+        )
+    };
+    let forms = r#"<office:forms><form:form form:name="Standard"><form:text form:name="Bearbeiter" xml:id="control1" form:id="control1"/><form:date form:name="Datum" xml:id="control2" form:id="control2"/><form:checkbox form:name="Telefonisch" xml:id="control3" form:id="control3"/></form:form></office:forms>"#;
+    let xml = format!(
+        r#"<office:document-content {NS_T} {NS_F}><office:body><office:text>{forms}<text:p>{}{}</text:p><text:p>Bearbeiter:</text:p><text:p><draw:control text:anchor-type="as-char" svg:width="0.334cm" svg:height="0.336cm" draw:control="control3"/> telefonisch</text:p></office:text></office:body></office:document-content>"#,
+        field("control1", "4.5cm", "5.302cm"),
+        field("control2", "4.48cm", "8.02cm"),
+    );
+    let flow = parse(&package(&xml, None)).unwrap();
+    let all = paras(&flow);
+    // The first paragraph holds the two fields' boxes, no field text.
+    let boxes: Vec<_> = all[0]
+        .inlines
+        .iter()
+        .filter_map(|i| match i {
+            Inline::Shape { kind, w, h, float: Some(f), blocks, .. } => Some((*kind, *w, *h, f.clone(), blocks.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(boxes.len(), 2, "{:?}", all[0].inlines);
+    assert!(!all[0].inlines.iter().any(|i| matches!(i, Inline::Control { .. })), "no field in the paragraph's text");
+    let cm = 72.0 / 2.54;
+    let (kind, w, h, float, blocks) = &boxes[0];
+    assert_eq!(*kind, wordcraft_doc::para::ShapeKind::TextBox);
+    assert!((w - 10.0 * cm).abs() < 0.1 && (h - 0.75 * cm).abs() < 0.1, "{w} × {h}");
+    assert!((float.x - 4.5 * cm).abs() < 0.1 && (float.y - 5.302 * cm).abs() < 0.1, "at {} , {}", float.x, float.y);
+    assert_eq!(float.page, 1);
+    assert_ne!(float.wrap, wordcraft_doc::para::Wrap::Inline);
+    // The box holds the field.
+    assert!(
+        matches!(&blocks[..], [crate::model::FBlock::Para(p)] if matches!(&p.inlines[..], [Inline::Control { control, .. }] if control.tag == "Bearbeiter"))
+    );
+    assert!((boxes[1].3.y - 8.02 * cm).abs() < 0.1);
+    // The check box stays in line, in its paragraph.
+    assert!(all[2].inlines.iter().any(|i| matches!(i, Inline::Control { control, .. } if control.tag == "Telefonisch")));
 }

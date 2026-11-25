@@ -269,16 +269,23 @@ impl FormsReader {
                 }
                 _ => texts.first().cloned().unwrap_or_default(),
             };
-            // An empty text control or list shows its placeholder.
+            // An empty text control or list shows its placeholder. kosmos: an ODF form control has no placeholder text
+            // and LibreOffice shows an empty field empty; WordCraft's own ("Type here.", English) is not the file's.
+            // A no-break space keeps the field there to click into; typing replaces it, and a placeholder is never
+            // saved as the value (`value`).
             if text.is_empty() && !matches!(c.kind, ControlKind::CheckBox { .. }) {
                 c.showing_placeholder = true;
-                text = c.placeholder_shown().to_string();
+                c.placeholder_text = EMPTY_FIELD.to_string();
+                text = EMPTY_FIELD.to_string();
             }
             self.controls.insert(id, (c, text));
         }
         true
     }
 }
+
+/// kosmos: what an empty form field shows (see the reader): nothing visible, but something to click into.
+const EMPTY_FIELD: &str = "\u{a0}";
 
 /// The text of a control's selected value, unless it shows its placeholder.
 fn value(c: &ContentControl, text: &str) -> String {
