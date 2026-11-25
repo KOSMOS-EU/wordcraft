@@ -290,6 +290,12 @@ pub(crate) fn go_to_page(app: &mut WordApp, id: &str) {
         "saveAs" => {
             app.ui.backstage_page = "saveAs".into();
         }
+        // kosmos: with the EDMS connected and no local files (OpenCore), the Open page would only offer its one
+        // button to the location picker: File › Open goes to the picker straight away.
+        "open" if app.edms_available() && !app.embed.local_files => {
+            app.ui.backstage = false;
+            app.open_dialog();
+        }
         // Not a page: `file.close` asks Save / Don't Save / Cancel first when there
         // are unsaved changes, and Cancel leaves the Backstage where it was.
         "close" => {

@@ -412,6 +412,24 @@ mod tests {
         poll(a);
     }
 
+    /// kosmos: with the EDMS and without local files, File › Open skips the Open page and shows the
+    /// picker straight away; with local files the Open page stays.
+    #[test]
+    fn file_open_goes_straight_to_the_picker_in_server_only_mode() {
+        let (mut a, _transport) = connected();
+        a.embed.local_files = false;
+        a.ui.backstage = true;
+        crate::backstage::go_to_page(&mut a, "open");
+        assert!(a.edms_browser.open.is_some(), "the picker is open");
+        assert!(!a.ui.backstage, "the Backstage is closed");
+        let (mut b, _transport) = connected();
+        b.embed.local_files = true;
+        b.ui.backstage = true;
+        crate::backstage::go_to_page(&mut b, "open");
+        assert_eq!(b.ui.backstage_page, "open");
+        assert!(b.edms_browser.open.is_none());
+    }
+
     /// Without local files, Open, Insert Picture and Save As go to the EDMS picker, never to the
     /// system dialog, and the picker starts by asking for the spaces.
     #[test]
